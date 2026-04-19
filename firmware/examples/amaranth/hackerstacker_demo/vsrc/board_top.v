@@ -44,9 +44,9 @@ module top(
             dbg_captured <= 1'b1;
         end
     end
-    // 0x4E = 0100_1110 → bits[2:0] = 110 → pinky=1(off), middle=on, index=off
-    // 0xFF = all 1s → all off (all LEDs dark)
-    // 0x00 = all 0s → all on
+    // 0x4E = 0100_1110 -> bits[2:0] = 110 -> pinky=1(off), middle=on, index=off
+    // 0xFF = all 1s -> all off (all LEDs dark)
+    // 0x00 = all 0s -> all on
     assign led_index  = dbg_captured ? dbg_byte0[0] : 1'b1;  // off until captured
     assign led_middle = dbg_captured ? dbg_byte0[1] : 1'b1;
     assign led_pinky  = dbg_captured ? dbg_byte0[2] : 1'b1;
@@ -187,6 +187,7 @@ module top(
         .clk(clk_12M),
         .rst(1'b0),
         .enable(nick_enable),
+        .short_press(short_press),
         // Font renderer interface (control signals) - nick's outputs go through mux
         .font_char_code(nick_font_char_code),
         .font_render_enable(nick_font_render_enable),

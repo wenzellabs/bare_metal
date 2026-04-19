@@ -48,6 +48,7 @@ def make_nick(width=8, height=16):
     
     # Control signals
     enable = Signal(name="enable")
+    short_press = Signal(name="short_press")  # Button press to advance to next nick
     
     # Internal flash control (driven by FSM)
     fsm_flash_read_en = Signal(name="fsm_flash_read_en")
@@ -510,7 +511,7 @@ def make_nick(width=8, height=16):
                 m.d.sync += display_timer.eq(display_timer + 1)
                 
                 # Check if it's time to switch to next nickname
-                with m.If(display_timer >= DISPLAY_TIME):
+                with m.If((display_timer >= DISPLAY_TIME) | short_press):
                     m.d.sync += [
                         display_timer.eq(0),
                         current_nick.eq(current_nick + 1),
@@ -539,6 +540,7 @@ def make_nick(width=8, height=16):
     # Port list for Verilog generation
     ports = [
         enable,
+        short_press,
         flash_read_en, flash_read_addr, flash_read_data, flash_read_valid, flash_busy, flash_ready,
         font_char_code, font_render_enable, font_render_done, font_busy, font_segment_pattern,
         font_flash_read_en, font_flash_read_addr, font_flash_read_valid, font_flash_busy, font_flash_ready,

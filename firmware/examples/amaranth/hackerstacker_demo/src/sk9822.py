@@ -171,10 +171,16 @@ def make_sk9822_controller(width=8, height=16, default_brightness=1):
     rd_port_b = mem_b.read_port(domain="sync", transparent_for=())
     
     # Calculate linear address from x, y
-    # Physical LED chain: 16 LEDs per column (digit), columns are sequential
-    # addr = x * height + y (column-major order)
+    # Physical LED chain on bare_metal board (16x8, 128 LEDs):
+    #   LED0 = bottom-right, LED7 = top-right (column goes bottom-to-top)
+    #   LED8 = one column left of LED0, LED127 = top-left
+    #   led_index = (15 - physical_col) * 8 + physical_row
+    #
+    # Game modules use 8-wide x 16-tall logical grid.
+    # Rotate 90° so game-y (0-15) maps to physical columns (right-to-left)
+    # and game-x (0-7) maps to physical rows (bottom-to-top).
     wr_addr = Signal(range(num_leds))
-    m.d.comb += wr_addr.eq((wr_x * height) + wr_y)
+    m.d.comb += wr_addr.eq(((height - 1 - wr_y) * width) + wr_x)
     
     # Connect write ports
     m.d.comb += [

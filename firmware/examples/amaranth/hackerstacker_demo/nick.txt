@@ -3,3 +3,7 @@
 # RGB values: 0-255
 
 wenzellabs,85,203,215
+mazzoo,203,215,85
+wenzel,215,85,203
+matze,123,125,158
+

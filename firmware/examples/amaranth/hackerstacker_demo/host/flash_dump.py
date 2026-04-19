@@ -23,7 +23,7 @@ def spi_cmd(ser, opcode, addr=None, write_bytes=b'', read_len=0):
     return ser.read(read_len) if read_len else b''
 
 def fast_read(ser, addr, length):
-    """Fast Read (0x0B) with dummy byte — read up to 'length' bytes."""
+    """Fast Read (0x0B) with dummy byte <-> read up to 'length' bytes."""
     # 0x0B + 3-byte addr + 1 dummy byte, then read 'length' bytes
     w = bytearray([0x0B])
     w += struct.pack('>I', addr)[1:]
