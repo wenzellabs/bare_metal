@@ -101,7 +101,7 @@ module top(
         dn_prev <= dn_stable;
 
         brightness_wr <= 1'b0;
-        if (up_press && brightness_reg < 5'd15) begin
+        if (up_press && brightness_reg < 5'd9) begin
             brightness_reg <= brightness_reg + 1;
             brightness_wr <= 1'b1;
         end
