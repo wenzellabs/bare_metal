@@ -1,23 +1,19 @@
 """Image display module with DVD-logo-style skating animation.
 
-This module reads a large image from flash memory and displays a moving
-window of it on the 8x16 LED display. The display window "skates" across
-the image, bouncing at the edges like the DVD logo.
+This module reads images from flash memory and displays a moving
+window on the 8x16 LED display. Supports multiple concatenated images.
 
-Image format in flash (starting at 0x060000):
-    [MAGIC:8]         'I' (0x49)
-    [LENGTH:24]       Total image data size in bytes (big-endian)
-    [WIDTH:16]        Image width in pixels (big-endian)
-    [HEIGHT:16]       Image height in pixels (big-endian)
-    [FRAME_DIV:16]    Frames between position updates (big-endian)
-    [DATA...]         RGB data: width x height x 3 bytes
+Image format in flash (starting at ADDR_IMAGE_START):
+    Per image (concatenated):
+        [MAGIC:8]         'I' (0x49)
+        [LENGTH:24]       Image data size in bytes (big-endian)
+        [WIDTH:16]        Image width in pixels (big-endian)
+        [HEIGHT:16]       Image height in pixels (big-endian)
+        [FRAME_DIV:16]    Frames between position updates (big-endian)
+        [DATA...]         RGB data: width x height x 3 bytes
 
-Display behavior:
-    - 8x16 window starts at top-left (0, 0)
-    - Every frame_divider frames, position increments
-    - When x reaches (img_width - 8), direction reverses
-    - When y reaches (img_height - 16), direction reverses
-    - Creates bouncing DVD-logo effect
+    After the last image, the next byte won't be 'I', so it wraps to start.
+    short_press cycles to the next image.
 """
 
 from amaranth import Module, Signal, Mux
@@ -41,6 +37,7 @@ def make_image(width=8, height=16):
     
     # Control signals
     enable = Signal(name="enable")
+    short_press = Signal(name="short_press")  # Button press to advance to next image
     
     # Flash controller interface
     flash_read_en = Signal(name="flash_read_en")
@@ -48,24 +45,30 @@ def make_image(width=8, height=16):
     flash_read_data = Signal(8, name="flash_read_data")
     flash_read_valid = Signal(name="flash_read_valid")
     flash_busy = Signal(name="flash_busy")
-    flash_ready = Signal(name="flash_ready")  # Flash has completed wake sequence
+    flash_ready = Signal(name="flash_ready")
     
-    # Image header data (read from flash at startup)
-    image_valid = Signal(name="image_valid")       # 'I' magic found
-    img_width = Signal(16, name="img_width")       # Image width
-    img_height = Signal(16, name="img_height")     # Image height
-    frame_divider = Signal(16, name="frame_divider") # Frames between updates
+    # Image header data
+    image_valid = Signal(name="image_valid")
+    img_width = Signal(16, name="img_width")
+    img_height = Signal(16, name="img_height")
+    frame_divider = Signal(16, name="frame_divider")
+    
+    # Multi-image tracking
+    ADDR_IMAGE_START = 0x0b0000
+    current_image_addr = Signal(24, reset=ADDR_IMAGE_START, name="current_image_addr")
+    next_image_addr = Signal(24, name="next_image_addr")  # computed from header length
+    img_data_length = Signal(24, name="img_data_length")  # from header
     
     # Current display window position in image
-    win_x = Signal(16, name="win_x")               # Window X position
-    win_y = Signal(16, name="win_y")               # Window Y position
-    dir_x = Signal(name="dir_x")                   # X direction: 0=forward, 1=reverse
-    dir_y = Signal(name="dir_y")                   # Y direction: 0=forward, 1=reverse
+    win_x = Signal(16, name="win_x")
+    win_y = Signal(16, name="win_y")
+    dir_x = Signal(name="dir_x")
+    dir_y = Signal(name="dir_y")
     
     # Pixel reading state
-    pixel_x = Signal(range(width), name="pixel_x")   # Current pixel X (0-7)
-    pixel_y = Signal(range(height), name="pixel_y")  # Current pixel Y (0-15)
-    color_component = Signal(2, name="color_component") # 0=R, 1=G, 2=B
+    pixel_x = Signal(range(width), name="pixel_x")
+    pixel_y = Signal(range(height), name="pixel_y")
+    color_component = Signal(2, name="color_component")
     pixel_r = Signal(8, name="pixel_r")
     pixel_g = Signal(8, name="pixel_g")
     pixel_b = Signal(8, name="pixel_b")
@@ -73,111 +76,114 @@ def make_image(width=8, height=16):
     # Frame divider counter
     frame_counter = Signal(16, name="frame_counter")
     
-    # Header byte counter (10 bytes: magic + length(3) + width(2) + height(2) + framediv(2))
+    # Header reading
     header_byte = Signal(4, name="header_byte")
-    header_buf = Signal(64, name="header_buf")     # Buffer for header data
+    header_buf = Signal(72, name="header_buf")  # 9 bytes after magic
     
-    # Base address for image data (after 10-byte header)
-    ADDR_IMAGE_START = 0x0b0000
+    # Advance request (latched from short_press, cleared when acted on)
+    advance_request = Signal(name="advance_request")
     
-    # State machine
+    # Latch short_press into advance_request (set on press, clear on use)
+    with m.If(short_press):
+        m.d.sync += advance_request.eq(1)
+    
     with m.FSM(name="image_fsm"):
-        # IDLE: Wait for enable
         with m.State("IDLE"):
-            with m.If(enable & ~image_valid & flash_ready):
-                # First time enabled - read header (only if flash is ready)
+            with m.If(enable & flash_ready):
                 m.d.sync += [
-                    flash_read_addr.eq(ADDR_IMAGE_START),
+                    flash_read_addr.eq(current_image_addr),
                     flash_read_en.eq(1),
                     header_byte.eq(0),
                     image_valid.eq(0),
                 ]
                 m.next = "READ_HEADER"
-            
-            with m.Elif(enable & image_valid & flash_ready):
-                # Image header already loaded AND flash ready - start drawing
-                m.d.sync += [
-                    pixel_x.eq(0),
-                    pixel_y.eq(0),
-                    color_component.eq(0),
-                ]
-                m.next = "READ_PIXEL_START"
-            
             with m.Else():
-                # When disabled, clear writer and flash
                 m.d.sync += [
                     writer.clear(),
                     flash_read_en.eq(0),
                 ]
         
-        # READ_HEADER: Read 10-byte header
         with m.State("READ_HEADER"):
             with m.If(~enable):
                 m.d.sync += flash_read_en.eq(0)
                 m.next = "IDLE"
             
-            # De-assert read_en once flash controller accepts it (goes busy)
             with m.Elif(flash_busy):
                 m.d.sync += flash_read_en.eq(0)
             
-            # Wait for flash_read_valid
             with m.If(flash_read_valid):
-                
-                # Shift in byte
-                m.d.sync += [
-                    header_buf.eq((header_buf << 8) | flash_read_data),
-                    header_byte.eq(header_byte + 1),
-                ]
-                
-                with m.If(header_byte == 9):  # Read all 10 bytes
-                    # Parse header: magic(1) + length(3) + width(2) + height(2) + framediv(2)
-                    # header_buf will contain last 8 bytes, flash_read_data has 10th byte
-                    m.next = "PARSE_HEADER"
+                # First byte: check magic
+                with m.If(header_byte == 0):
+                    with m.If(flash_read_data == ord('I')):
+                        m.d.sync += [
+                            header_buf.eq(0),
+                            header_byte.eq(1),
+                            flash_read_addr.eq(flash_read_addr + 1),
+                            flash_read_en.eq(1),
+                        ]
+                    with m.Else():
+                        # Not 'I' - wrap to start
+                        m.d.sync += [
+                            current_image_addr.eq(ADDR_IMAGE_START),
+                            flash_read_addr.eq(ADDR_IMAGE_START),
+                            flash_read_en.eq(1),
+                            header_byte.eq(0),
+                        ]
                 with m.Else():
-                    # Read next byte
                     m.d.sync += [
-                        flash_read_addr.eq(flash_read_addr + 1),
-                        flash_read_en.eq(1),
+                        header_buf.eq((header_buf << 8) | flash_read_data),
+                        header_byte.eq(header_byte + 1),
                     ]
+                    
+                    with m.If(header_byte == 9):
+                        m.next = "PARSE_HEADER"
+                    with m.Else():
+                        m.d.sync += [
+                            flash_read_addr.eq(flash_read_addr + 1),
+                            flash_read_en.eq(1),
+                        ]
         
-        # PARSE_HEADER: Extract header fields
         with m.State("PARSE_HEADER"):
             with m.If(~enable):
                 m.next = "IDLE"
             with m.Else():
-                # After reading 10 bytes, header_buf contains last 8 bytes
-                # Byte 0 was magic (check separately), bytes 1-3 were length (skip)
-                # Bytes 4-5: width, 6-7: height, 8-9: frame_divider
-                # header_buf shifts left, so newest byte is at [7:0]
-                # Last 8 bytes read were: length_lsb, length_mid, length_msb, width_msb, width_lsb, height_msb, height_lsb, framediv_msb
-                # Then we read one more: framediv_lsb (in flash_read_data from last READ_HEADER)
-                # Actually, after 10 reads, header_buf has bytes 2-9, and we need to reconstruct
-                # Simpler approach: extract from correct positions after all shifts
+                # header_buf is 72 bits with 9 bytes (1-9) shifted in, newest at LSB
+                # byte1 at [71:64], byte2 at [63:56], ..., byte9 at [7:0]
+                # bytes 1-3: length(24), 4-5: width(16), 6-7: height(16), 8-9: framediv(16)
                 m.d.sync += [
-                    img_width.eq((header_buf[40:48] << 8) | header_buf[32:40]),      # bytes 4-5
-                    img_height.eq((header_buf[24:32] << 8) | header_buf[16:24]),     # bytes 6-7
-                    frame_divider.eq((header_buf[8:16] << 8) | header_buf[0:8]),     # bytes 8-9
+                    img_data_length[16:24].eq(header_buf[64:72]),
+                    img_data_length[8:16].eq(header_buf[56:64]),
+                    img_data_length[0:8].eq(header_buf[48:56]),
+                    img_width.eq((header_buf[40:48] << 8) | header_buf[32:40]),
+                    img_height.eq((header_buf[24:32] << 8) | header_buf[16:24]),
+                    frame_divider.eq((header_buf[8:16] << 8) | header_buf[0:8]),
                     win_x.eq(0),
                     win_y.eq(0),
-                    dir_x.eq(0),  # Start moving right
-                    dir_y.eq(0),  # Start moving down
+                    dir_x.eq(0),
+                    dir_y.eq(0),
                     frame_counter.eq(0),
+                    image_valid.eq(1),
                 ]
-                
-                # Check if first byte was magic 'I' (0x49)
-                # We need to check the very first byte read - let's add a separate signal
-                # For now, assume valid if we got here
-                m.d.sync += image_valid.eq(1)
-                
-                m.next = "IDLE"
+                m.next = "CALC_NEXT"
         
-        # READ_PIXEL_START: Calculate flash address for current pixel
+        with m.State("CALC_NEXT"):
+            with m.If(~enable):
+                m.next = "IDLE"
+            with m.Else():
+                # Now img_data_length is valid
+                m.d.sync += [
+                    next_image_addr.eq(current_image_addr + 10 + img_data_length),
+                    pixel_x.eq(0),
+                    pixel_y.eq(0),
+                    color_component.eq(0),
+                    advance_request.eq(0),  # clear any pending advance
+                ]
+                m.next = "READ_PIXEL_START"
+        
         with m.State("READ_PIXEL_START"):
             with m.If(~enable):
                 m.next = "IDLE"
             with m.Else():
-                # Calculate address: base + (win_y + pixel_y) * img_width * 3 + (win_x + pixel_x) * 3 + component
-                # Address = 0x060000 + 10 (header) + ((win_y + pixel_y) * img_width + (win_x + pixel_x)) * 3 + component
                 img_pixel_y = Signal(16)
                 img_pixel_x = Signal(16)
                 pixel_offset = Signal(24)
@@ -189,25 +195,20 @@ def make_image(width=8, height=16):
                 ]
                 
                 m.d.sync += [
-                    flash_read_addr.eq(ADDR_IMAGE_START + 10 + pixel_offset),
+                    flash_read_addr.eq(current_image_addr + 10 + pixel_offset),
                     flash_read_en.eq(1),
                 ]
                 m.next = "READ_PIXEL_WAIT"
         
-        # READ_PIXEL_WAIT: Wait for flash read
         with m.State("READ_PIXEL_WAIT"):
             with m.If(~enable):
                 m.d.sync += flash_read_en.eq(0)
                 m.next = "IDLE"
             
-            # De-assert read_en once flash controller accepts it (goes busy)
             with m.Elif(flash_busy):
                 m.d.sync += flash_read_en.eq(0)
             
-            # Wait for flash_read_valid
             with m.If(flash_read_valid):
-                
-                # Store color component
                 with m.If(color_component == 0):
                     m.d.sync += [
                         pixel_r.eq(flash_read_data),
@@ -222,14 +223,13 @@ def make_image(width=8, height=16):
                     ]
                     m.next = "READ_PIXEL_START"
                 
-                with m.Else():  # component == 2 (blue)
+                with m.Else():
                     m.d.sync += [
                         pixel_b.eq(flash_read_data),
                         color_component.eq(0),
                     ]
                     m.next = "WRITE_PIXEL"
         
-        # WRITE_PIXEL: Write RGB pixel to display
         with m.State("WRITE_PIXEL"):
             with m.If(~enable):
                 m.next = "IDLE"
@@ -242,13 +242,9 @@ def make_image(width=8, height=16):
                     b=pixel_b
                 )
                 
-                # Move to next pixel
                 with m.If(pixel_x == width - 1):
-                    m.d.sync += [
-                        pixel_x.eq(0),
-                    ]
+                    m.d.sync += pixel_x.eq(0)
                     with m.If(pixel_y == height - 1):
-                        # Frame complete
                         m.d.sync += pixel_y.eq(0)
                         m.next = "FRAME_DONE"
                     with m.Else():
@@ -258,71 +254,62 @@ def make_image(width=8, height=16):
                     m.d.sync += pixel_x.eq(pixel_x + 1)
                     m.next = "READ_PIXEL_START"
         
-        # FRAME_DONE: Update window position for next frame
         with m.State("FRAME_DONE"):
             with m.If(~enable):
                 m.next = "IDLE"
             with m.Else():
-                # Increment frame counter
-                m.d.sync += frame_counter.eq(frame_counter + 1)
-                
-                with m.If(frame_counter >= frame_divider - 1):
-                    # Time to update position
-                    m.d.sync += frame_counter.eq(0)
-                    
-                    # Update X position with bounce
-                    max_x = Signal(16)
-                    max_y = Signal(16)
-                    m.d.comb += [
-                        max_x.eq(img_width - width),
-                        max_y.eq(img_height - height),
+                # Check for advance request (button press)
+                with m.If(advance_request):
+                    m.d.sync += [
+                        advance_request.eq(0),
+                        current_image_addr.eq(next_image_addr),
+                        image_valid.eq(0),
                     ]
+                    m.next = "IDLE"  # will re-enter and read next header
+                with m.Else():
+                    m.d.sync += frame_counter.eq(frame_counter + 1)
                     
-                    with m.If(dir_x == 0):  # Moving right
-                        with m.If(win_x >= max_x - 1):
-                            m.d.sync += [
-                                win_x.eq(max_x),
-                                dir_x.eq(1),  # Reverse
-                            ]
+                    with m.If(frame_counter >= frame_divider - 1):
+                        m.d.sync += frame_counter.eq(0)
+                        
+                        max_x = Signal(16)
+                        max_y = Signal(16)
+                        m.d.comb += [
+                            max_x.eq(img_width - width),
+                            max_y.eq(img_height - height),
+                        ]
+                        
+                        with m.If(dir_x == 0):
+                            with m.If(win_x >= max_x - 1):
+                                m.d.sync += [win_x.eq(max_x), dir_x.eq(1)]
+                            with m.Else():
+                                m.d.sync += win_x.eq(win_x + 1)
                         with m.Else():
-                            m.d.sync += win_x.eq(win_x + 1)
-                    with m.Else():  # Moving left
-                        with m.If(win_x <= 1):
-                            m.d.sync += [
-                                win_x.eq(0),
-                                dir_x.eq(0),  # Reverse
-                            ]
+                            with m.If(win_x <= 1):
+                                m.d.sync += [win_x.eq(0), dir_x.eq(0)]
+                            with m.Else():
+                                m.d.sync += win_x.eq(win_x - 1)
+                        
+                        with m.If(dir_y == 0):
+                            with m.If(win_y >= max_y - 1):
+                                m.d.sync += [win_y.eq(max_y), dir_y.eq(1)]
+                            with m.Else():
+                                m.d.sync += win_y.eq(win_y + 1)
                         with m.Else():
-                            m.d.sync += win_x.eq(win_x - 1)
+                            with m.If(win_y <= 1):
+                                m.d.sync += [win_y.eq(0), dir_y.eq(0)]
+                            with m.Else():
+                                m.d.sync += win_y.eq(win_y - 1)
                     
-                    # Update Y position with bounce
-                    with m.If(dir_y == 0):  # Moving down
-                        with m.If(win_y >= max_y - 1):
-                            m.d.sync += [
-                                win_y.eq(max_y),
-                                dir_y.eq(1),  # Reverse
-                            ]
-                        with m.Else():
-                            m.d.sync += win_y.eq(win_y + 1)
-                    with m.Else():  # Moving up
-                        with m.If(win_y <= 1):
-                            m.d.sync += [
-                                win_y.eq(0),
-                                dir_y.eq(0),  # Reverse
-                            ]
-                        with m.Else():
-                            m.d.sync += win_y.eq(win_y - 1)
-                
-                # Start next frame
-                m.d.sync += [
-                    pixel_x.eq(0),
-                    pixel_y.eq(0),
-                ]
-                m.next = "READ_PIXEL_START"
+                    m.d.sync += [
+                        pixel_x.eq(0),
+                        pixel_y.eq(0),
+                    ]
+                    m.next = "READ_PIXEL_START"
     
-    # Port list for Verilog generation and integration
     ports = [
         enable,
+        short_press,
         flash_read_en, flash_read_addr, flash_read_data, flash_read_valid, flash_busy, flash_ready,
     ] + writer.signals
     

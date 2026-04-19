@@ -289,6 +289,7 @@ module top(
         .clk(clk_12M),
         .rst(1'b0),
         .enable(image_enable),
+        .short_press(short_press),
         .flash_read_en(image_flash_read_en),
         .flash_read_addr(image_flash_read_addr),
         .flash_read_data(image_flash_read_data),

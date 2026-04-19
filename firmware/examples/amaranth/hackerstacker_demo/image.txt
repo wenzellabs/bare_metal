@@ -1,0 +1,11 @@
+# list one mor multiple png or jpg image files
+# cycle through them with a short press in image mode
+# (cycle through modes with a long press)
+
+image.jpg
+image.jpg0
+image.jpg1
+image.jpg2
+image.jpg3
+image.jpg4
+image.jpg5

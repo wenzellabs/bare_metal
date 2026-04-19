@@ -71,8 +71,9 @@ FONT_BIN = $(BUILD)/font.bin
 COMBINED_BIN = $(BUILD)/combined.bin
 PCF = constraints/top.pcf
 
-# Detect which image file exists (for dependency tracking)
-IMAGE_SOURCE = $(firstword $(wildcard image.png image.jpg image.jpeg))
+# Detect which image source exists (for dependency tracking)
+# Prefer image.txt (multi-image list), fallback to single image file
+IMAGE_SOURCE = $(firstword $(wildcard image.txt image.png image.jpg image.jpeg))
 
 .PHONY: all clean flash prog boot run report timing stats
 all: $(BIN)
@@ -123,9 +124,13 @@ $(ASC): $(JSON)
 $(BIN): $(ASC)
 	$(ICEPACK) $(ASC) $(BIN)
 
-# Convert image to flash format
+# Convert image(s) to flash format
+# Prefers image.txt (list of images), falls back to single image file
 $(IMAGE_BIN): $(IMAGE_CONVERTER) $(IMAGE_SOURCE) | $(BUILD)
-	@if [ -f image.png ] || [ -f image.jpg ] || [ -f image.jpeg ]; then \
+	@if [ -f image.txt ]; then \
+		echo "Converting images from image.txt to $(IMAGE_BIN)..."; \
+		$(PY) $(IMAGE_CONVERTER) image.txt $(IMAGE_BIN) $(IMAGE_FRAME_DIVIDER); \
+	elif [ -f image.png ] || [ -f image.jpg ] || [ -f image.jpeg ]; then \
 		IMG=$$(ls image.png image.jpg image.jpeg 2>/dev/null | head -1); \
 		echo "Converting $$IMG to $(IMAGE_BIN)..."; \
 		$(PY) $(IMAGE_CONVERTER) $$IMG $(IMAGE_BIN) $(IMAGE_FRAME_DIVIDER); \
