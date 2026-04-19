@@ -1,0 +1,5 @@
+# Nickname configuration file
+# Format: NAME,RED,GREEN,BLUE
+# RGB values: 0-255
+
+wenzellabs,85,203,215

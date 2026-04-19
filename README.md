@@ -30,7 +30,7 @@ here's a memory map of the SPI flash:
 
 ```
 # 0x000_0000 - 0x000_009f =160b, multiboot header, slot table
-# 0x000_00a0 - 0x001_ffff ~124kB, slot 0, bare_metal_bootloader
+# 0x000_00a0 - 0x001_efff ~124kB, slot 0, bare_metal_bootloader
 # 0x001_f000 - 0x001_ffff =4kB, bootmetadata
 # 0x002_0000 - 0x003_ffff =128kB, slot 1, user bitstream, hackerstacker_demo by default
 # 0x004_0000 - 0x005_ffff =128kB, slot 2, another bitstream, transputers anyone?
