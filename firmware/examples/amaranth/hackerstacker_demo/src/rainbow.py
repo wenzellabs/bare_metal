@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """Demo/test module that writes rainbow pattern to SK9822 framebuffer.
 
-This module demonstrates how to use the SK9822 controller's write interface.
-It generates a moving rainbow pattern and writes it to the LED framebuffer.
+This module generates moving rainbow patterns and writes them to the LED
+framebuffer. Short press cycles through display modes:
+
+0 = diagonal rainbow (hue based on LED index, original)
+1 = horizontal rainbow scroll (hue based on X + offset)
+2 = vertical rainbow scroll (hue based on Y + offset)
+3 = h-zigzag rainbow scroll (every 2nd column reversed)
+4 = v-zigzag rainbow scroll (every 2nd row reversed)
 """
 import sys
-from amaranth import Module, Signal
+from amaranth import Module, Signal, Mux
 from amaranth.back import verilog
+
+
+NUM_RAINBOW_MODES = 5
 
 
 def make_rainbow_writer(width=8, height=16):
@@ -20,6 +29,16 @@ def make_rainbow_writer(width=8, height=16):
     
     # Input: enable signal
     enable = Signal(name="enable")
+    short_press = Signal(name="short_press")
+    
+    # Display mode (cycles on short_press)
+    display_mode = Signal(3, name="display_mode")
+    
+    with m.If(short_press):
+        with m.If(display_mode >= NUM_RAINBOW_MODES - 1):
+            m.d.sync += display_mode.eq(0)
+        with m.Else():
+            m.d.sync += display_mode.eq(display_mode + 1)
     
     # Outputs: connect to sk9822_controller write interface
     wr_en = Signal(name="wr_en")
@@ -80,66 +99,62 @@ def make_rainbow_writer(width=8, height=16):
         wr_y.eq(write_y),
     ]
     
-    # Compute rainbow color for current position
-    # Use linear LED index for hue
+    # Compute hue based on display mode
     led_index = Signal(range(num_leds))
     m.d.comb += led_index.eq((write_y * width) + write_x)
     
-    hue = Signal(8)
-    m.d.comb += hue.eq(led_index[:8] + rainbow_offset)
+    hue_h = (write_x << 5)   # horizontal: 0,32,64,...,224
+    hue_v = (write_y << 4)   # vertical: 0,16,32,...,240
     
-    # Convert hue to RGB (6-segment rainbow, each segment gets 256/6 = ~42.67 hue values)
-    # We'll use integer division: 256/6 = 42 with remainder, so segments are slightly unequal
-    # Multiply hue by 6, then take top bits to get segment (0-5)
-    hue_x6 = Signal(11)  # hue * 6 needs 11 bits (max 255*6 = 1530)
+    # Zigzag variants
+    hue_hzig = Signal(8)
+    hue_vzig = Signal(8)
+    m.d.comb += [
+        hue_hzig.eq(Mux(write_x[0], 255 - hue_v, hue_v)),
+        hue_vzig.eq(Mux(write_y[0], 255 - hue_h, hue_h)),
+    ]
+    
+    hue = Signal(8)
+    with m.Switch(display_mode):
+        with m.Case(0):  # Diagonal (original LED index)
+            m.d.comb += hue.eq(led_index[:8] + rainbow_offset)
+        with m.Case(1):  # Horizontal scroll
+            m.d.comb += hue.eq(hue_h + rainbow_offset)
+        with m.Case(2):  # Vertical scroll
+            m.d.comb += hue.eq(hue_v + rainbow_offset)
+        with m.Case(3):  # H-zigzag scroll
+            m.d.comb += hue.eq(hue_hzig + rainbow_offset)
+        with m.Case(4):  # V-zigzag scroll
+            m.d.comb += hue.eq(hue_vzig + rainbow_offset)
+        with m.Default():
+            m.d.comb += hue.eq(led_index[:8] + rainbow_offset)
+    
+    # Convert hue to RGB (6-segment rainbow)
+    hue_x6 = Signal(11)
     m.d.comb += hue_x6.eq(hue * 6)
     
     segment = Signal(3)
-    m.d.comb += segment.eq(hue_x6 >> 8)  # Divide by 256 to get segment 0-5
+    m.d.comb += segment.eq(hue_x6 >> 8)
     
     segment_pos = Signal(8)
-    m.d.comb += segment_pos.eq(hue_x6[:8])  # Bottom 8 bits = position within segment
+    m.d.comb += segment_pos.eq(hue_x6[:8])
     
     # RGB calculation based on segment
     with m.Switch(segment):
         with m.Case(0):  # Red to Yellow
-            m.d.comb += [
-                wr_r.eq(255),
-                wr_g.eq(segment_pos),
-                wr_b.eq(0),
-            ]
+            m.d.comb += [wr_r.eq(255), wr_g.eq(segment_pos), wr_b.eq(0)]
         with m.Case(1):  # Yellow to Green
-            m.d.comb += [
-                wr_r.eq(255 - segment_pos),
-                wr_g.eq(255),
-                wr_b.eq(0),
-            ]
+            m.d.comb += [wr_r.eq(255 - segment_pos), wr_g.eq(255), wr_b.eq(0)]
         with m.Case(2):  # Green to Cyan
-            m.d.comb += [
-                wr_r.eq(0),
-                wr_g.eq(255),
-                wr_b.eq(segment_pos),
-            ]
+            m.d.comb += [wr_r.eq(0), wr_g.eq(255), wr_b.eq(segment_pos)]
         with m.Case(3):  # Cyan to Blue
-            m.d.comb += [
-                wr_r.eq(0),
-                wr_g.eq(255 - segment_pos),
-                wr_b.eq(255),
-            ]
+            m.d.comb += [wr_r.eq(0), wr_g.eq(255 - segment_pos), wr_b.eq(255)]
         with m.Case(4):  # Blue to Magenta
-            m.d.comb += [
-                wr_r.eq(segment_pos),
-                wr_g.eq(0),
-                wr_b.eq(255),
-            ]
+            m.d.comb += [wr_r.eq(segment_pos), wr_g.eq(0), wr_b.eq(255)]
         with m.Case(5):  # Magenta to Red
-            m.d.comb += [
-                wr_r.eq(255),
-                wr_g.eq(0),
-                wr_b.eq(255 - segment_pos),
-            ]
+            m.d.comb += [wr_r.eq(255), wr_g.eq(0), wr_b.eq(255 - segment_pos)]
     
-    ports = [enable, wr_en, wr_x, wr_y, wr_r, wr_g, wr_b]
+    ports = [enable, short_press, wr_en, wr_x, wr_y, wr_r, wr_g, wr_b]
     return m, ports
 
 

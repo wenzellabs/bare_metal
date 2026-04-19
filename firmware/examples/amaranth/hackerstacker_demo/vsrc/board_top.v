@@ -118,7 +118,7 @@ module top(
     wire pattern_enable;      // Enable signal for pattern module
     wire rainbow_enable;      // Enable signal for rainbow module
     wire image_enable;        // Enable signal for image module
-    wire [1:0] pattern_display; // Display mode selector (0-3)
+    wire [3:0] pattern_display; // Display mode selector (0-9)
     
     mainmenu u_mainmenu (
         .clk(clk_12M),
@@ -320,6 +320,7 @@ module top(
         .clk(clk_12M),
         .rst(1'b0),
         .enable(rainbow_enable),
+        .short_press(short_press),
         .wr_en(rainbow_wr_en),
         .wr_x(rainbow_wr_x),
         .wr_y(rainbow_wr_y),
