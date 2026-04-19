@@ -8,6 +8,8 @@ module top(
     input clk_12M,// 12MHz oscillator
     // buttons
     input btn_ok,           // Button
+    input btn_up,           // Up button (brightness+)
+    input btn_down,         // Down button (brightness-)
     // LED matrix
     output led_di,          // SK9822 data (MOSI)
     output led_ci,          // SK9822 clock (SCLK)
@@ -61,6 +63,53 @@ module top(
         .short_press(short_press),
         .long_press(long_press)
     );
+    
+    // Brightness control via btn_up / btn_down
+    // Simple debounce + edge detect for each button
+    reg [17:0] up_deb_cnt, dn_deb_cnt;
+    reg up_stable, dn_stable, up_prev, dn_prev;
+    wire up_press = up_stable & ~up_prev;
+    wire dn_press = dn_stable & ~dn_prev;
+    reg [4:0] brightness_reg;  // 1-31, reset to 1
+    reg brightness_wr;
+
+    initial begin
+        brightness_reg = 5'd1;
+        up_stable = 1'b0;
+        dn_stable = 1'b0;
+        up_prev = 1'b0;
+        dn_prev = 1'b0;
+        brightness_wr = 1'b0;
+    end
+
+    always @(posedge clk_12M) begin
+        // Debounce btn_up (~21ms at 12MHz)
+        if (btn_up != up_stable) begin
+            up_deb_cnt <= up_deb_cnt + 1;
+            if (&up_deb_cnt) up_stable <= btn_up;
+        end else
+            up_deb_cnt <= 0;
+
+        // Debounce btn_down
+        if (btn_down != dn_stable) begin
+            dn_deb_cnt <= dn_deb_cnt + 1;
+            if (&dn_deb_cnt) dn_stable <= btn_down;
+        end else
+            dn_deb_cnt <= 0;
+
+        up_prev <= up_stable;
+        dn_prev <= dn_stable;
+
+        brightness_wr <= 1'b0;
+        if (up_press && brightness_reg < 5'd31) begin
+            brightness_reg <= brightness_reg + 1;
+            brightness_wr <= 1'b1;
+        end
+        if (dn_press && brightness_reg > 5'd1) begin
+            brightness_reg <= brightness_reg - 1;
+            brightness_wr <= 1'b1;
+        end
+    end
     
     // Main menu state machine
     wire [2:0] current_mode;  // 0=stacker, 1=nick, 2=image, 3=pattern, 4=rainbow
@@ -356,8 +405,8 @@ module top(
         .wr_r(wr_r),
         .wr_g(wr_g),
         .wr_b(wr_b),
-        .wr_brightness_en(1'b0),
-        .wr_brightness(5'd0)
+        .wr_brightness_en(brightness_wr),
+        .wr_brightness(brightness_reg)
     );
     
 endmodule
