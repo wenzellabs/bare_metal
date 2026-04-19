@@ -43,10 +43,12 @@ def convert_one_image(input_file, frame_divider=16):
     """
     try:
         img = Image.open(input_file).convert('RGB')
+        # Rotate 90° CW so images display correctly
+        img = img.transpose(Image.Transpose.ROTATE_270)
         width, height = img.size
 
         if width < 8 or height < 16:
-            print(f"  Error: Image must be at least 8x16 pixels (got {width}x{height})")
+            print(f"  Error: Rotated image must be at least 8x16 pixels (got {width}x{height})")
             return None
 
         data_length = width * height * 3
