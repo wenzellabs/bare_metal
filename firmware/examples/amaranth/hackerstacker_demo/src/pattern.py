@@ -23,7 +23,7 @@ def make_pattern_module(width=8, height=16):
     7 = angled gradient (2,1): hue = 2*x + y
     8 = angled gradient (1,-2): hue = x - 2*y
     9 = angled gradient (2,-1): hue = 2*x - y
-    10 = knight tile inverted 10/11/01 (2×3)
+    10 = knight tile inverted 10/11/01 (2*3)
     """
     m = Module()
     

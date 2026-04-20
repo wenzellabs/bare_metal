@@ -1,136 +1,118 @@
 #!/usr/bin/env python3
-"""Convert nickname text file to flash binary format.
+"""Nick converter: nick.txt -> nick.bin for FPGA flash at 0x0a0000.
+
+Binary format:
+    Nick file header (8 bytes):
+        [0x00] MAGIC:8       'N' (0x4E)
+        [0x01] VERSION:8     3
+        [0x02] NUM_NICKS:16  big-endian
+        [0x04] RESERVED:32   zeros
+
+    Per-nick entry header (16 bytes):
+        [0x00] MAGIC:8       'n' (0x6E)
+        [0x01] VERSION:8     3
+        [0x02] INDEX:16      1-based index (big-endian)
+        [0x04] FG_R:8
+        [0x05] FG_G:8
+        [0x06] FG_B:8
+        [0x07] BG_R:8
+        [0x08] BG_G:8
+        [0x09] BG_B:8
+        [0x0A] STRLEN:16     big-endian
+        [0x0C] RESERVED:32   zeros
+
+    Per-nick entry data:
+        [STRLEN bytes]       ASCII nick text
+        [padding]            zero-padded to next 8-byte boundary
 
 Input format (nick.txt):
-    Each line: NICKNAME,RED,GREEN,BLUE
-    Example:
-        Alice,255,0,0
-        Bob,0,255,0
-        Charlie,0,0,255
+    # comment
+    name,R,G,B[,BG_R,BG_G,BG_B]
 
-Output binary format:
-    [MAGIC:8]         'N' (0x4E)
-    [LENGTH:24]       Total data size in bytes (big-endian)
-    [COUNT:16]        Number of nicknames (big-endian)
-    [DATA...]         For each nickname:
-                        [NAME_LEN:8]  Length of name (1-32)
-                        [NAME:...]    ASCII characters
-                        [COLOR_R:8]   Red (0-255)
-                        [COLOR_G:8]   Green (0-255)
-                        [COLOR_B:8]   Blue (0-255)
+Usage:
+    python3 host/nick_convert.py nick.txt -o build/nick.bin
 """
 
-import sys
+import argparse
+import os
 import struct
+import sys
 
 
-def convert_nicknames(input_file, output_file):
-    """Convert nickname text file to binary format."""
-    
-    # Read and parse input file
-    nicknames = []
-    with open(input_file, 'r') as f:
-        for line_num, line in enumerate(f, 1):
+def parse_nick_file(path):
+    """Parse nick.txt, returns list of (name, fg_rgb, bg_rgb)."""
+    nicks = []
+    with open(path) as f:
+        for line in f:
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
-            
             parts = line.split(',')
-            if len(parts) != 4:
-                print(f"Warning: Line {line_num} invalid format (expected NAME,R,G,B): {line}")
+            if len(parts) < 4:
                 continue
-            
-            name = parts[0].strip()
-            try:
-                r = int(parts[1].strip())
-                g = int(parts[2].strip())
-                b = int(parts[3].strip())
-            except ValueError:
-                print(f"Warning: Line {line_num} invalid color values: {line}")
-                continue
-            
-            # Validate
-            if not name:
-                print(f"Warning: Line {line_num} empty name")
-                continue
-            if len(name) > 32:
-                print(f"Warning: Line {line_num} name too long (max 32), truncating: {name}")
-                name = name[:32]
-            if not (0 <= r <= 255 and 0 <= g <= 255 and 0 <= b <= 255):
-                print(f"Warning: Line {line_num} color out of range (0-255): {line}")
-                continue
-            
-            nicknames.append((name, r, g, b))
-    
-    if not nicknames:
-        print("Error: No valid nicknames found in input file")
-        return False
-    
-    print(f"Found {len(nicknames)} nicknames:")
-    for name, r, g, b in nicknames:
-        print(f"  {name:20s} RGB({r:3d},{g:3d},{b:3d})")
-    
-    # Build binary output
-    data = bytearray()
-    
-    # Magic byte
-    data.append(ord('N'))
-    
-    # Calculate total data size (after count field)
-    data_size = 0
-    for name, r, g, b in nicknames:
-        data_size += 1 + len(name) + 3  # len + name + RGB
-    
-    # Length (24-bit big-endian)
-    data.extend(struct.pack('>I', data_size)[1:])  # Skip first byte to get 24-bit
-    
-    # Count (16-bit big-endian)
-    data.extend(struct.pack('>H', len(nicknames)))
-    
-    # Nickname data
-    for name, r, g, b in nicknames:
-        # Reverse name: LED chain runs right-to-left, so store
-        # characters in reverse order for left-to-right display
-        reversed_name = name[::-1]
-        
-        # Length of name
-        data.append(len(reversed_name))
-        
-        # Name bytes (ASCII, reversed)
-        data.extend(reversed_name.encode('ascii'))
-        
-        # Color (RGB)
-        data.append(r)
-        data.append(g)
-        data.append(b)
-    
-    # Write output file
-    with open(output_file, 'wb') as f:
-        f.write(data)
-    
-    print(f"\nWrote {len(data)} bytes to {output_file}")
-    print(f"Header: magic={chr(data[0])}, length={data_size}, count={len(nicknames)}")
-    return True
+            name = parts[0]
+            fg = (int(parts[1]), int(parts[2]), int(parts[3]))
+            if len(parts) >= 7:
+                bg = (int(parts[4]), int(parts[5]), int(parts[6]))
+            else:
+                bg = (0, 0, 0)
+            nicks.append((name, fg, bg))
+    return nicks
+
+
+def build_nick_bin(nicks, output_path):
+    out = bytearray()
+
+    # File header (8 bytes)
+    out += struct.pack('>BBH', ord('N'), 3, len(nicks))
+    out += b'\x00' * 4  # reserved
+
+    for i, (name, fg, bg) in enumerate(nicks):
+        text = name.encode('ascii')
+        strlen = len(text)
+        padded_len = ((strlen + 7) // 8) * 8  # pad to 8-byte boundary
+
+        # Entry header (16 bytes)
+        hdr = bytearray(16)
+        hdr[0] = ord('n')
+        hdr[1] = 3
+        struct.pack_into('>H', hdr, 2, i + 1)  # 1-based index
+        hdr[4] = fg[0]
+        hdr[5] = fg[1]
+        hdr[6] = fg[2]
+        hdr[7] = bg[0]
+        hdr[8] = bg[1]
+        hdr[9] = bg[2]
+        struct.pack_into('>H', hdr, 10, strlen)
+        # bytes 12-15 reserved (zeros)
+        out += hdr
+
+        # Entry data (padded to 8-byte boundary)
+        entry = bytearray(padded_len)
+        entry[:strlen] = text
+        out += entry
+
+    with open(output_path, 'wb') as fp:
+        fp.write(out)
+
+    print(f"Wrote {output_path} ({len(out)} bytes, {len(nicks)} nicks)")
+    for i, (name, fg, bg) in enumerate(nicks):
+        print(f"  [{i}] \"{name}\" fg=({fg[0]},{fg[1]},{fg[2]}) bg=({bg[0]},{bg[1]},{bg[2]})")
 
 
 def main():
-    if len(sys.argv) != 3:
-        print("Usage: python3 nick_convert.py input.txt output.bin")
-        print()
-        print("Input format (one per line):")
-        print("  NAME,RED,GREEN,BLUE")
-        print("  Alice,255,0,0")
-        print("  Bob,0,255,0")
+    parser = argparse.ArgumentParser(description='Convert nick.txt to FPGA nick.bin')
+    parser.add_argument('input', help='nick.txt file')
+    parser.add_argument('-o', '--output', default='build/nick.bin')
+    args = parser.parse_args()
+
+    os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
+    nicks = parse_nick_file(args.input)
+    if not nicks:
+        print("Error: no nicks found", file=sys.stderr)
         sys.exit(1)
-    
-    input_file = sys.argv[1]
-    output_file = sys.argv[2]
-    
-    if convert_nicknames(input_file, output_file):
-        sys.exit(0)
-    else:
-        sys.exit(1)
+    build_nick_bin(nicks, args.output)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

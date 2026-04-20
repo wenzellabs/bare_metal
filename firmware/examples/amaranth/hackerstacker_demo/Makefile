@@ -114,7 +114,7 @@ $(VGEN_FONT_RENDER): src/font_render.py | $(BUILD)
 
 # Synthesis: produce JSON for nextpnr
 $(JSON): $(VGEN_SK9822) $(VGEN_RAINBOW) $(VGEN_PATTERN) $(VGEN_BUTTON) $(VGEN_MAINMENU) $(VGEN_FLASH) $(VGEN_IMAGE) $(VGEN_NICK) $(VGEN_STACKER) $(VGEN_FONT_RENDER) $(WRAP) $(PCF)
-	$(YOSYS) -q -p "synth_ice40 -top $(TOP) -json $(JSON)" $(VGEN_SK9822) $(VGEN_RAINBOW) $(VGEN_PATTERN) $(VGEN_BUTTON) $(VGEN_MAINMENU) $(VGEN_FLASH) $(VGEN_IMAGE) $(VGEN_NICK) $(VGEN_STACKER) $(VGEN_FONT_RENDER) $(WRAP)
+	$(YOSYS) -q -p "synth_ice40 -top $(TOP) -dsp -json $(JSON)" $(VGEN_SK9822) $(VGEN_RAINBOW) $(VGEN_PATTERN) $(VGEN_BUTTON) $(VGEN_MAINMENU) $(VGEN_FLASH) $(VGEN_IMAGE) $(VGEN_NICK) $(VGEN_STACKER) $(VGEN_FONT_RENDER) $(WRAP)
 
 # Place & Route
 $(ASC): $(JSON)
@@ -150,8 +150,8 @@ $(IMAGE_BIN): $(IMAGE_CONVERTER) $(IMAGE_SOURCE) | $(BUILD)
 	fi
 
 # Convert font to flash format
-$(FONT_BIN): $(FONT_CONVERTER) host/font.py | $(BUILD)
-	$(PY) $(FONT_CONVERTER) $(FONT_BIN)
+$(FONT_BIN): $(FONT_CONVERTER) $(wildcard fonts/*.TTF fonts/*.ttf) | $(BUILD)
+	$(PY) $(FONT_CONVERTER) $(NICK_FONTS) -o $(FONT_BIN)
 
 # Combined binary: bitstream at 0x020000 (slot 1), image at 0x0b0000 (userdata)
 # CRITICAL: 0x00000-0x1ffff is bootloader - DO NOT OVERWRITE!
@@ -166,14 +166,15 @@ $(COMBINED_BIN): $(BIN) $(IMAGE_BIN)
 NICK_TXT = nick.txt
 NICK_BIN = build/nick.bin
 NICK_CONVERTER = host/nick_convert.py
+NICK_FONTS = fonts/04B_30__.TTF:16 fonts/04B_03B_.TTF:8
 
 $(NICK_BIN): $(NICK_TXT) $(NICK_CONVERTER)
 	@mkdir -p $(BUILD)
 	@if [ -f "$(NICK_TXT)" ]; then \
-		$(PY) $(NICK_CONVERTER) $(NICK_TXT) $(NICK_BIN); \
+		$(PY) $(NICK_CONVERTER) $(NICK_TXT) -o $(NICK_BIN); \
 	else \
 		echo "Warning: $(NICK_TXT) not found, creating placeholder"; \
-		$(PY) $(NICK_CONVERTER) /dev/null $(NICK_BIN); \
+		printf 'N\x03\x00\x00\x00\x00\x00\x00' > $(NICK_BIN); \
 	fi
 
 image: $(IMAGE_BIN)

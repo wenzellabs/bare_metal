@@ -10,6 +10,8 @@ module top(
     input btn_ok,           // Button
     input btn_up,           // Up button (brightness+)
     input btn_down,         // Down button (brightness-)
+    input btn_left,         // Left button (scroll mode)
+    input btn_right,        // Right button (font switch)
     // LED matrix
     output led_di,          // SK9822 data (MOSI)
     output led_ci,          // SK9822 clock (SCLK)
@@ -75,10 +77,10 @@ module top(
 
     initial begin
         brightness_reg = 5'd1;
-        up_stable = 1'b0;
-        dn_stable = 1'b0;
-        up_prev = 1'b0;
-        dn_prev = 1'b0;
+        up_stable = 1'b1;   // Match active-low idle state (buttons have pull-ups)
+        dn_stable = 1'b1;
+        up_prev = 1'b1;
+        dn_prev = 1'b1;
         brightness_wr = 1'b0;
     end
 
@@ -101,7 +103,7 @@ module top(
         dn_prev <= dn_stable;
 
         brightness_wr <= 1'b0;
-        if (up_press && brightness_reg < 5'd9) begin
+        if (up_press && brightness_reg < 5'd5) begin
             brightness_reg <= brightness_reg + 1;
             brightness_wr <= 1'b1;
         end
@@ -109,6 +111,36 @@ module top(
             brightness_reg <= brightness_reg - 1;
             brightness_wr <= 1'b1;
         end
+    end
+
+    // Debounce btn_left and btn_right (for nick font/mode switching)
+    reg [17:0] left_deb_cnt, right_deb_cnt;
+    reg left_stable, right_stable, left_prev, right_prev;
+    wire left_press = left_stable & ~left_prev;
+    wire right_press = right_stable & ~right_prev;
+
+    initial begin
+        left_stable = 1'b1;
+        right_stable = 1'b1;
+        left_prev = 1'b1;
+        right_prev = 1'b1;
+    end
+
+    always @(posedge clk_12M) begin
+        if (btn_left != left_stable) begin
+            left_deb_cnt <= left_deb_cnt + 1;
+            if (&left_deb_cnt) left_stable <= btn_left;
+        end else
+            left_deb_cnt <= 0;
+
+        if (btn_right != right_stable) begin
+            right_deb_cnt <= right_deb_cnt + 1;
+            if (&right_deb_cnt) right_stable <= btn_right;
+        end else
+            right_deb_cnt <= 0;
+
+        left_prev <= left_stable;
+        right_prev <= right_stable;
     end
     
     // Main menu state machine
@@ -140,13 +172,20 @@ module top(
     wire stacker_font_active;  // declared here, driven by stacker_module
     wire [3:0] client_active = {2'b00, image_enable, nick_enable | stacker_font_active};
 
-    // Nick flash interface
-    wire nick_flash_read_en;
-    wire [23:0] nick_flash_read_addr;
+    // Nick's own flash signals (output from nick module)
+    wire nick_own_read_en;
+    wire [23:0] nick_own_read_addr;
+    // Shared flash responses (from flash controller, go to nick AND font_render)
     wire [7:0] nick_flash_read_data;
     wire nick_flash_read_valid;
     wire nick_flash_busy;
     wire nick_flash_ready;
+    // Font render flash signals (for stacker score display)
+    wire font_flash_read_en;
+    wire [23:0] font_flash_read_addr;
+    // External mux: font_render takes flash when stacker_font_active
+    wire nick_flash_read_en = stacker_font_active ? font_flash_read_en : nick_own_read_en;
+    wire [23:0] nick_flash_read_addr = stacker_font_active ? font_flash_read_addr : nick_own_read_addr;
     
     // Image flash interface
     wire image_flash_read_en;
@@ -196,40 +235,28 @@ module top(
     wire [3:0] nick_wr_y;
     wire [7:0] nick_wr_r, nick_wr_g, nick_wr_b;
     
-    // Font renderer signals (shared between nick and stacker modules)
-    // Nick's font outputs (renamed to allow muxing)
-    wire [7:0] nick_font_char_code;
-    wire nick_font_render_enable;
-    // Stacker's font outputs
+    // Font renderer signals (used by stacker only; nick uses pre-rendered bitmaps)
     wire [7:0] stacker_font_char_code;
     wire stacker_font_render_enable;
-    // Muxed font_render inputs: stacker takes priority when font_active
-    wire [7:0] font_char_code = stacker_font_active ? stacker_font_char_code : nick_font_char_code;
-    wire font_render_enable = stacker_font_active ? stacker_font_render_enable : nick_font_render_enable;
-    // Shared outputs from font_render (go to both modules)
+    // Shared outputs from font_render
     wire font_render_done;
     wire font_busy;
     wire [15:0] font_segment_pattern;
-    wire font_flash_read_en;
-    wire [23:0] font_flash_read_addr;
-    wire font_flash_read_valid;
-    wire font_flash_busy;
-    wire font_flash_ready;
     
     font_render u_font_render (
         .clk(clk_12M),
         .rst(1'b0),
-        .char_code(font_char_code),
-        .render_enable(font_render_enable),
+        .char_code(stacker_font_char_code),
+        .render_enable(stacker_font_render_enable),
         .render_done(font_render_done),
         .busy(font_busy),
         .segment_pattern(font_segment_pattern),
         .flash_read_en(font_flash_read_en),
         .flash_read_addr(font_flash_read_addr),
-        .flash_read_data(nick_flash_read_data),  // Shares nick flash data bus
-        .flash_read_valid(font_flash_read_valid),
-        .flash_busy(font_flash_busy),
-        .flash_ready(font_flash_ready)
+        .flash_read_data(nick_flash_read_data),
+        .flash_read_valid(nick_flash_read_valid),
+        .flash_busy(nick_flash_busy),
+        .flash_ready(nick_flash_ready)
     );
     
     nick_module u_nick (
@@ -237,21 +264,11 @@ module top(
         .rst(1'b0),
         .enable(nick_enable),
         .short_press(short_press),
-        // Font renderer interface (control signals) - nick's outputs go through mux
-        .font_char_code(nick_font_char_code),
-        .font_render_enable(nick_font_render_enable),
-        .font_render_done(font_render_done),
-        .font_busy(font_busy),
-        .font_segment_pattern(font_segment_pattern),
-        // Font renderer flash requests (inputs from font_render)
-        .font_flash_read_en(font_flash_read_en),
-        .font_flash_read_addr(font_flash_read_addr),
-        .font_flash_read_valid(font_flash_read_valid),
-        .font_flash_busy(font_flash_busy),
-        .font_flash_ready(font_flash_ready),
-        // Flash interface (nick's output to flash controller, muxes nick + font requests)
-        .flash_read_en(nick_flash_read_en),
-        .flash_read_addr(nick_flash_read_addr),
+        .btn_right(right_press),
+        .btn_left(left_press),
+        // Flash interface (nick's own requests; muxed externally with font_render)
+        .flash_read_en(nick_own_read_en),
+        .flash_read_addr(nick_own_read_addr),
         .flash_read_data(nick_flash_read_data),
         .flash_read_valid(nick_flash_read_valid),
         .flash_busy(nick_flash_busy),
@@ -262,7 +279,7 @@ module top(
         .nick_wr_y(nick_wr_y),
         .nick_wr_r(nick_wr_r),
         .nick_wr_g(nick_wr_g),
-        .nick_wr_b(nick_wr_b),
+        .nick_wr_b(nick_wr_b)
     );
 
     // Stacker game module write signals

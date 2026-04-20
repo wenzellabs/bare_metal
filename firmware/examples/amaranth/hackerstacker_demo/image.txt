@@ -2,8 +2,6 @@
 # cycle through them with a short press in image mode
 # (cycle through modes with a long press)
 
-16x8white.png
-wenzellabs_logo.png
 image.jpg0
 image.jpg1
 image.jpg2

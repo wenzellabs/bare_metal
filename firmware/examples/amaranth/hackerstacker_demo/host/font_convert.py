@@ -1,150 +1,141 @@
 #!/usr/bin/env python3
-"""Convert font definition to indexed flash format for LED display.
+"""Font converter: TTF to font.bin for FPGA flash at 0x080000.
 
-This tool converts the 16-segment font definition to an indexed lookup
-table in flash. Each of the 256 possible char codes gets a fixed 16-byte
-slot, enabling O(1) lookup via address arithmetic on the FPGA
-(no linear search needed).
+Binary format - see notes.txt for details.
+FPGA glyph lookup: addr = offset_table[font] + (char_code << slot_shift)
+No multiplier needed!
 
-Flash format (at 0x050000):
-    Slot 0 = Header (16 bytes):
-        [0x00] MAGIC:8        'F' (0x46)
-        [0x01] BITS_PER_CHAR:8 Number of bits used per glyph (16 for 16-seg, 128 for 8x16 bitmap)
-        [0x02] CHARS_USED:8   Number of populated glyph slots (informational)
-        [0x03] RESERVED:5     Reserved bytes (zeros)
-        [0x08] FONT_NAME:8    Font name (ASCII, null-padded)
-
-    Slots 1-255 = Glyph data (16 bytes each):
-        Each char code 0x01-0xFF has a 16-byte slot at:
-            offset = char_code x 16
-        For 16-segment font: first 2 bytes = segment pattern (big-endian),
-                             remaining 14 bytes = 0x00
-        For future 8x16 bitmap: all 16 bytes used (128 bits)
-
-    Char code 0x00 (NUL) has no glyph - its slot IS the header.
-    This is fine because NUL is never a printable character.
-
-    Total size: 256 x 16 = 4096 bytes
-
-FPGA address calculation (pure wiring, zero LUTs, zero adders):
-    glyph_addr = 0x050 : char_code[7:0] : 0000
-    i.e. flash_addr[23:12] = 0x050
-         flash_addr[11:4]  = char_code
-         flash_addr[3:0]   = byte within slot
+Usage:
+    python3 host/font_convert.py fonts/04B_30__.TTF:16 fonts/04B_03B_.TTF:8 -o build/font.bin
 """
 
-import sys
+import argparse
+import math
+import os
 import struct
-from font import FONT
+import sys
+
+from PIL import Image, ImageDraw, ImageFont
+
+FLASH_FONT_BASE = 0x080000
+MAX_FONTS = 4
+FONT_FILE_HEADER_SIZE = 8 + 4 * MAX_FONTS  # 24 bytes
 
 
-SLOT_SIZE = 16       # bytes per glyph slot
-NUM_SLOTS = 256      # slot 0 = header, slots 1-255 = glyphs
-FONT_NAME = "16seg"  # default font name
+def next_power_of_2(n):
+    if n <= 1:
+        return 1
+    return 1 << (n - 1).bit_length()
 
 
-def create_flash_font(output_file, font_name=FONT_NAME):
-    """Convert font definition to indexed flash format.
+def render_font(ttf_path, pixel_size):
+    font = ImageFont.truetype(ttf_path, pixel_size)
+    name = os.path.splitext(os.path.basename(ttf_path))[0][:16]
+    height = pixel_size
+    orientation = 'H' if height <= 8 else 'V'
+    bytes_per_col = math.ceil(height / 8)
 
-    Args:
-        output_file: Path to output binary file
-        font_name: Font name string (max 8 chars, null-padded)
+    max_width = 0
+    for c in range(32, 127):
+        advance = int(font.getlength(chr(c)))
+        bbox = font.getbbox(chr(c))
+        w = bbox[2] - bbox[0] if bbox else 0
+        max_width = max(max_width, advance, w)
+    if max_width == 0:
+        max_width = pixel_size // 2
+    width = max_width
 
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        # Build lookup: char_code -> segment_pattern
-        glyph_map = {}
-        for char, segments in FONT:
-            char_code = ord(char) & 0xFF
-            glyph_map[char_code] = segments
+    raw_glyph_size = width * bytes_per_col
+    slot_size = next_power_of_2(raw_glyph_size)
+    slot_shift = int(math.log2(slot_size))
 
-        chars_used = len(glyph_map)
-        bits_per_char = 16  # 16-segment font
-        total_size = NUM_SLOTS * SLOT_SIZE  # 256 x 16 = 4096
+    glyphs = []
+    for c in range(256):
+        ch = chr(c) if 32 <= c < 127 else ' '
+        img = Image.new('1', (width, height), 0)
+        draw = ImageDraw.Draw(img)
+        draw.text((0, 0), ch, font=font, fill=1)
+        glyph_data = bytearray(raw_glyph_size)
+        for col in range(width):
+            for byte_row in range(bytes_per_col):
+                byte_val = 0
+                for bit in range(8):
+                    row = byte_row * 8 + bit
+                    if row < height and img.getpixel((col, row)):
+                        byte_val |= (1 << bit)
+                glyph_data[col * bytes_per_col + byte_row] = byte_val
+        glyphs.append(glyph_data)
 
-        print(f"Converting {chars_used} glyphs to indexed format: {output_file}")
-        print(f"  Bits per char: {bits_per_char}")
-        print(f"  Slot size: {SLOT_SIZE} bytes")
-        print(f"  Slot 0: header (NUL char not printable)")
-        print(f"  Slots 1-255: glyph data")
-        print(f"  Total: {total_size} bytes")
-        print(f"  Font name: \"{font_name}\"")
+    print(f"    {name}: orient={orientation} {width}x{height} "
+          f"raw={raw_glyph_size}B slot={slot_size}B shift={slot_shift}")
+    return {
+        'name': name, 'orient': orientation,
+        'height': height, 'width': width,
+        'glyphs': glyphs,
+        'slot_size': slot_size, 'slot_shift': slot_shift,
+    }
 
-        with open(output_file, 'wb') as f:
-            # === Slot 0: Header (16 bytes) ===
-            # NUL (char code 0) is never printed, so its slot doubles as header
-            header = bytearray(SLOT_SIZE)
-            header[0] = ord('F')           # magic
-            header[1] = bits_per_char      # bits_per_char
-            header[2] = chars_used & 0xFF  # chars_used
-            # header[3:8] = reserved (zeros)
 
-            # font name (8 bytes, null-padded)
-            name_bytes = font_name.encode('ascii')[:8]
-            header[8:8 + len(name_bytes)] = name_bytes
+def build_font_bin(font_specs, output_path):
+    fonts = []
+    for ttf_path, pixel_size in font_specs:
+        print(f"  Rendering {ttf_path} @ {pixel_size}px...")
+        fonts.append(render_font(ttf_path, pixel_size))
 
-            f.write(header)
+    num_fonts = len(fonts)
+    assert num_fonts <= MAX_FONTS
 
-            # === Slots 1-255: Glyph data (16 bytes each) ===
-            for char_code in range(1, NUM_SLOTS):
-                slot = bytearray(SLOT_SIZE)
-                if char_code in glyph_map:
-                    segments = glyph_map[char_code]
-                    # Reverse bit order: bit 0 <-> bit 15, etc.
-                    # Physical LED chain runs opposite to our bit numbering
-                    reversed_seg = int(f'{segments:016b}'[::-1], 2)
-                    # Store as big-endian 16-bit in first 2 bytes
-                    slot[0] = (reversed_seg >> 8) & 0xFF
-                    slot[1] = reversed_seg & 0xFF
-                f.write(slot)
+    out = bytearray()
+    out += struct.pack('>BBH', ord('F'), 3, num_fonts)
+    out += b'\x00' * 4
+    offset_table_pos = len(out)
+    out += b'\x00' * (4 * MAX_FONTS)
+    assert len(out) == FONT_FILE_HEADER_SIZE
 
-        # Print some stats
-        print(f"  Populated slots: {chars_used}/{NUM_SLOTS}")
-        print(f"  Char range: 0x{min(glyph_map.keys()):02X} - 0x{max(glyph_map.keys()):02X}")
-        print(f"  Created {output_file} ({total_size} bytes)")
+    for i, f in enumerate(fonts):
+        glyph_data_addr = FLASH_FONT_BASE + len(out) + 24
+        struct.pack_into('>I', out, offset_table_pos + i * 4, glyph_data_addr)
+        hdr = bytearray(24)
+        hdr[0] = ord('f')
+        hdr[1] = 3
+        nb = f['name'].encode('ascii')[:16]
+        hdr[2:2 + len(nb)] = nb
+        hdr[0x12] = ord(f['orient'])
+        hdr[0x13] = f['height']
+        hdr[0x14] = f['width']
+        hdr[0x15] = 255
+        hdr[0x16] = f['slot_shift']
+        hdr[0x17] = 0
+        out += hdr
+        for glyph in f['glyphs']:
+            slot = bytearray(f['slot_size'])
+            slot[:len(glyph)] = glyph
+            out += slot
 
-        # Verify a known glyph
-        m_code = ord('m')
-        if m_code in glyph_map:
-            m_offset = m_code * SLOT_SIZE
-            m_seg = glyph_map[m_code]
-            print(f"  Verify: 'm' (0x{m_code:02X}) at offset 0x{m_offset:04X}, pattern=0b{m_seg:016b}")
-
-        return True
-
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    with open(output_path, 'wb') as fp:
+        fp.write(out)
+    print(f"Wrote {output_path} ({len(out)} bytes, {num_fonts} fonts)")
+    for i, f in enumerate(fonts):
+        addr = struct.unpack_from('>I', out, offset_table_pos + i * 4)[0]
+        print(f"  [{i}] {f['name']:16s} {f['orient']} {f['width']}x{f['height']} "
+              f"shift={f['slot_shift']} glyph_data@0x{addr:06x}")
 
 
 def main():
-    """Main entry point."""
-    if len(sys.argv) < 2:
-        print("Usage: python3 host/font_convert.py output.bin [font_name]")
-        print()
-        print("Arguments:")
-        print("  output.bin       Output binary file for flash")
-        print("  font_name        Optional font name (max 8 chars, default: '16seg')")
-        print()
-        print("Flash format: 256 x 16-byte slots = 4096 bytes (slot 0 = header)")
-        print("Char codes 0x01-0xFF get direct slots. NUL (0x00) = header.")
-        print("FPGA lookup: addr = 0x050 : char_code : 0x0 (pure wiring)")
-        print()
-        print("Example:")
-        print("  python3 host/font_convert.py build/font.bin")
-        print("  tinyprog -a 0x050000 build/font.bin")
-        sys.exit(1)
-
-    output_file = sys.argv[1]
-    font_name = sys.argv[2] if len(sys.argv) > 2 else FONT_NAME
-
-    success = create_flash_font(output_file, font_name)
-    sys.exit(0 if success else 1)
+    parser = argparse.ArgumentParser(description='Convert TTF fonts to FPGA font.bin')
+    parser.add_argument('fonts', nargs='+', help='font:size, e.g. fonts/foo.TTF:16')
+    parser.add_argument('-o', '--output', default='build/font.bin')
+    args = parser.parse_args()
+    font_specs = []
+    for spec in args.fonts:
+        parts = spec.rsplit(':', 1)
+        if len(parts) != 2:
+            print(f"Error: expected font:size, got {specrm /home/wenzel/CODE/bare_metal/firmware/examples/amaranth/hackerstacker_demo/host/font_convert.py}", file=sys.stderr)
+            sys.exit(1)
+        font_specs.append((parts[0], int(parts[1])))
+    os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
+    build_font_bin(font_specs, args.output)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

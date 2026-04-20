@@ -1,568 +1,627 @@
 #!/usr/bin/env python3
-"""Nickname display module.
+"""Nick display - reads nick text + font glyphs from flash, renders to LED matrix.
 
-This module reads nickname data from flash memory and displays it statically
-on the 8x16 LED display.
-
-Nickname format in flash (starting at 0x0fec00):
-    [MAGIC:8]         'N' (0x4E)
-    [LENGTH:24]       Total nickname data size in bytes (big-endian)
-    [COUNT:16]        Number of nicknames (big-endian)
-    [DATA...]         Nicknames:
-                        [NAME_LEN:8]  Length of nickname (1-32)
-                        [NAME:...]    ASCII characters
-                        [COLOR_R:8]   Red component (0-255)
-                        [COLOR_G:8]   Green component (0-255)
-                        [COLOR_B:8]   Blue component (0-255)
-
-Display behavior:
-    - Reads all nicknames from flash
-    - Displays each nickname statically for ~2 seconds
-    - Cycles through nicknames sequentially
-    - Truncates nicknames to MAX_DISPLAY_CHARS
+Architecture:
+    - Nick data at 0x0a0000 (text + colors)
+    - Font data at 0x080000 (pre-rendered glyph bitmaps)
+    - At boot: read font header to get offset table + per-font params
+    - At display: for each char, lookup glyph in font, render columns
+    - No multiplier: glyph_addr = font_offset[F] + (char_code << slot_shift)
 """
 
-# Display configuration
-MAX_DISPLAY_CHARS = 6  # Maximum characters to display (adjust for larger displays)
-
 import sys
-from amaranth import Module, Signal, Mux
+from amaranth import Module, Signal, Cat, Const
 from amaranth.back import verilog
 from sk9822 import SK9822Writer
 
+DISPLAY_WIDTH = 8
+DISPLAY_HEIGHT = 16
+MAX_FONTS = 4
+MAX_NICK_LEN = 32
+SCROLL_STEP_BITS = 19
+SCROLL_PAUSE_STEPS = 15
 
-def make_nick(width=8, height=16):
-    """Create nickname display module.
-    
-    Args:
-        width: Display width in pixels (default 8)
-        height: Display height in pixels (default 16)
-    
-    Returns:
-        (module, ports) tuple
-    """
+
+def make_nick(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT):
     m = Module()
-    
-    # Create writer for LED updates
     writer = SK9822Writer(width, height, name_prefix="nick_")
-    
-    # Control signals
+
     enable = Signal(name="enable")
-    short_press = Signal(name="short_press")  # Button press to advance to next nick
-    
-    # Internal flash control (driven by FSM)
-    fsm_flash_read_en = Signal(name="fsm_flash_read_en")
-    fsm_flash_read_addr = Signal(24, name="fsm_flash_read_addr")
-    
-    # Flash controller interface (for nickname data) - OUTPUTS to flash controller
+    short_press = Signal(name="short_press")
+    btn_right = Signal(name="btn_right")
+    btn_left = Signal(name="btn_left")
+
     flash_read_en = Signal(name="flash_read_en")
     flash_read_addr = Signal(24, name="flash_read_addr")
     flash_read_data = Signal(8, name="flash_read_data")
     flash_read_valid = Signal(name="flash_read_valid")
     flash_busy = Signal(name="flash_busy")
     flash_ready = Signal(name="flash_ready")
-    
-    # Font renderer interface
-    font_char_code = Signal(8, name="font_char_code")
-    font_render_enable = Signal(name="font_render_enable")
-    font_render_done = Signal(name="font_render_done")
-    font_busy = Signal(name="font_busy")
-    font_segment_pattern = Signal(16, name="font_segment_pattern")
-    
-    # Font renderer flash access (output from nick's internal mux)
-    font_flash_read_en = Signal(name="font_flash_read_en")
-    font_flash_read_addr = Signal(24, name="font_flash_read_addr")
-    font_flash_read_valid = Signal(name="font_flash_read_valid")
-    font_flash_busy = Signal(name="font_flash_busy")
-    font_flash_ready = Signal(name="font_flash_ready")
-    
-    # Flash address for nickname data
+
     ADDR_NICK_START = 0x0a0000
-    
-    # Header data
-    nick_valid = Signal(name="nick_valid")         # 'N' magic found
-    nick_count = Signal(16, name="nick_count")     # Number of nicknames
-    
-    # Current nickname being displayed
-    current_nick = Signal(16, name="current_nick") # Index of current nickname
-    nick_len = Signal(8, name="nick_len")          # Length of current nickname
-    nick_color_r = Signal(8, reset=0, name="nick_color_r")    # Red component (will be loaded from flash)
-    nick_color_g = Signal(8, reset=0, name="nick_color_g")    # Green component (will be loaded from flash)
-    nick_color_b = Signal(8, reset=0, name="nick_color_b")    # Blue component (will be loaded from flash)
-    color_loaded = Signal(reset=0, name="color_loaded")     # Flag: colors have been read from flash
-    
-    # Address tracking for multi-nick support
-    next_nick_addr = Signal(24, name="next_nick_addr")  # Flash address of next nickname to read
-    
-    # Display timing - switch nicks every ~2 seconds
-    display_timer = Signal(26, name="display_timer")  # Timer for nick display duration
-    DISPLAY_TIME = 2**25  # ~2.097 seconds at 16MHz (33,554,432 cycles)
-    
-    # Character buffer for current nickname (max 32 chars)
-    char_lookup_addr = Signal(5, name="char_lookup_addr")  # Separate signal for comb reads
-    
-    # Write port signals - directly driven by comb logic so writes happen
-    # on the same posedge that data arrives (no 1-cycle delay)
-    char_wr_addr_comb = Signal(5, name="char_wr_addr_comb")
-    char_wr_data_comb = Signal(8, name="char_wr_data_comb")
-    char_wr_en_comb = Signal(name="char_wr_en_comb")
-    
-    # Counter for write address (registered, tracks how many chars stored)
-    char_store_count = Signal(5, name="char_store_count")
-    
-    # Simple RAM for character storage
+    ADDR_FONT_START = 0x080000
+
+    # Font metadata (loaded at boot)
+    num_fonts = Signal(8, name="num_fonts")
+    font_offset = [Signal(24, name=f"font_offset_{i}") for i in range(MAX_FONTS)]
+    font_orient = [Signal(8, name=f"font_orient_{i}") for i in range(MAX_FONTS)]
+    font_height_reg = [Signal(8, name=f"font_height_{i}") for i in range(MAX_FONTS)]
+    font_width_reg = [Signal(8, name=f"font_width_{i}") for i in range(MAX_FONTS)]
+    font_shift = [Signal(4, name=f"font_shift_{i}") for i in range(MAX_FONTS)]
+    fonts_loaded = Signal(name="fonts_loaded")
+
+    # Nick metadata
+    num_nicks = Signal(8, name="num_nicks")
+    nicks_loaded = Signal(name="nicks_loaded")
+    current_nick = Signal(8, name="current_nick")
+    current_font = Signal(8, name="current_font")
+
+    nick_fg_r = Signal(8, name="nick_fg_r")
+    nick_fg_g = Signal(8, name="nick_fg_g")
+    nick_fg_b = Signal(8, name="nick_fg_b")
+    nick_bg_r = Signal(8, name="nick_bg_r")
+    nick_bg_g = Signal(8, name="nick_bg_g")
+    nick_bg_b = Signal(8, name="nick_bg_b")
+    nick_strlen = Signal(8, name="nick_strlen")
+
+    # Nick text buffer BRAM
     from amaranth.lib.memory import Memory
-    char_buffer = Memory(shape=8, depth=32, init=[])
-    m.submodules.char_buffer = char_buffer
-    char_wr_port = char_buffer.write_port()
-    char_rd_port = char_buffer.read_port(domain="sync", transparent_for=())
-    
+    nick_mem = Memory(shape=8, depth=MAX_NICK_LEN, init=[])
+    m.submodules.nick_mem = nick_mem
+    nm_wr = nick_mem.write_port()
+    nm_rd = nick_mem.read_port(domain="sync", transparent_for=())
+    nm_wr_addr = Signal(5)
+    nm_wr_data = Signal(8)
+    nm_wr_en = Signal()
+    nm_rd_addr = Signal(5)
     m.d.comb += [
-        char_wr_port.addr.eq(char_wr_addr_comb),
-        char_wr_port.data.eq(char_wr_data_comb),
-        char_wr_port.en.eq(char_wr_en_comb),
-        char_rd_port.addr.eq(char_lookup_addr),
+        nm_wr.addr.eq(nm_wr_addr), nm_wr.data.eq(nm_wr_data), nm_wr.en.eq(nm_wr_en),
+        nm_rd.addr.eq(nm_rd_addr),
     ]
-    
-    # Read result from character buffer
-    char_read = Signal(8, name="char_read")
-    m.d.comb += char_read.eq(char_rd_port.data)
-    
-    # State machine for nickname display
-    # States: IDLE, READ_HEADER, READ_COUNT, FIND_NICK, READ_NICK_LEN, READ_NICK_DATA, 
-    #         READ_COLOR, DISPLAY, SCROLL_WAIT
-    header_byte = Signal(3, name="header_byte")
-    read_count = Signal(8, name="read_count")
-    skip_count = Signal(16, name="skip_count")
-    color_component = Signal(2, name="color_component")  # 0=R, 1=G, 2=B
-    
-    # Display rendering signals
-    disp_x = Signal(4, name="disp_x")
-    disp_y = Signal(5, name="disp_y")
+
+    # Active font params (latched)
+    active_orient = Signal(8, name="active_orient")
+    active_width = Signal(8, name="active_width")
+    active_height = Signal(8, name="active_height")
+    active_shift = Signal(4, name="active_shift")
+    active_offset = Signal(24, name="active_offset")
+
+    # Display geometry
+    render_cols = Signal(5, name="render_cols")
+    render_rows_max = Signal(5, name="render_rows_max")
+    nick_pixel_width = Signal(10, name="nick_pixel_width")
+
+    # Rendering state
     char_idx = Signal(5, name="char_idx")
-    
-    # Debug: latch low nibble of 1st nick character's ASCII code from flash
+    glyph_col = Signal(8, name="glyph_col")
+    display_col = Signal(8, name="display_col")
+    render_col = Signal(5, name="render_col")
+    render_row = Signal(5, name="render_row")
+    col_data_lo = Signal(8, name="col_data_lo")
+    col_data_hi = Signal(8, name="col_data_hi")
+
+    # Scrolling
+    scroll_offset = Signal(8, name="scroll_offset")
+    scroll_dir = Signal()
+    scroll_timer = Signal(SCROLL_STEP_BITS + 1)
+    scroll_paused = Signal()
+    pause_count = Signal(5)
+    scroll_max = Signal(8)
+    needs_scroll = Signal()
+    scroll_mode = Signal()
+
+    # FSM counters
+    boot_byte = Signal(5, name="boot_byte")
+    font_idx = Signal(4, name="font_idx")
+    nick_scan_count = Signal(8)
+    meta_byte = Signal(4)
+    load_count = Signal(8)
+    nick_loaded = Signal()
+
     debug_font_nibble = Signal(4, name="debug_font_nibble")
-    
+
+    # Button pending latches
+    pending_right = Signal()
+    pending_left = Signal()
+    consume_right = Signal()
+    consume_left = Signal()
+
+    with m.If(~enable | consume_right):
+        m.d.sync += pending_right.eq(0)
+    with m.Elif(btn_right):
+        m.d.sync += pending_right.eq(1)
+
+    with m.If(~enable | consume_left):
+        m.d.sync += pending_left.eq(0)
+    with m.Elif(btn_left):
+        m.d.sync += pending_left.eq(1)
+
+    # ===== FSM =====
     with m.FSM(name="nick_fsm"):
-        # IDLE: Wait for enable, read header if needed, then render
+
         with m.State("IDLE"):
-            with m.If(enable & ~color_loaded & flash_ready):
-                # First time or after reset - read header to get colors
-                m.d.sync += [
-                    fsm_flash_read_addr.eq(ADDR_NICK_START),
-                    fsm_flash_read_en.eq(1),
-                    header_byte.eq(0),
-                ]
-                m.next = "READ_HEADER"
-            
-            with m.Elif(enable & color_loaded):
-                # Colors already loaded, go directly to rendering
-                m.d.sync += [
-                    char_idx.eq(0),
-                    disp_x.eq(0),
-                    disp_y.eq(0),
-                    char_lookup_addr.eq(0),
-                ]
-                m.next = "RENDER_INIT"
-            
+            with m.If(enable & flash_ready & ~fonts_loaded):
+                m.d.sync += [flash_read_addr.eq(ADDR_FONT_START),
+                             flash_read_en.eq(1), boot_byte.eq(0)]
+                m.next = "FONT_HDR"
+            with m.Elif(enable & fonts_loaded & ~nicks_loaded):
+                m.d.sync += [flash_read_addr.eq(ADDR_NICK_START),
+                             flash_read_en.eq(1), boot_byte.eq(0)]
+                m.next = "NICK_HDR"
+            with m.Elif(enable & fonts_loaded & nicks_loaded & ~nick_loaded):
+                m.next = "FIND_NICK"
+            with m.Elif(enable & nick_loaded):
+                m.next = "SETUP_RENDER"
             with m.Else():
-                # When disabled, ensure flash is released and display state is reset
-                # NOTE: DO NOT reset color_loaded or colors - keep them persistent!
-                m.d.sync += [
-                    writer.clear(),
-                    disp_x.eq(0),
-                    disp_y.eq(0),
-                    fsm_flash_read_en.eq(0),  # Ensure flash is released
-                    # nick_valid.eq(0),   # REMOVED - don't reset, keep colors
-                    # color_loaded.eq(0), # REMOVED - keep colors loaded
-                ]
-        
-        # READ_HEADER: Read 5-byte header (magic + length + count)
-        with m.State("READ_HEADER"):
+                m.d.sync += [writer.clear(), flash_read_en.eq(0)]
+
+        # ---- Font header: magic(1) ver(1) num_fonts_hi(1) num_fonts_lo(1) reserved(4) ----
+        with m.State("FONT_HDR"):
             with m.If(~enable):
-                m.d.sync += fsm_flash_read_en.eq(0)
+                m.d.sync += flash_read_en.eq(0)
                 m.next = "IDLE"
-            
-            m.d.sync += writer.clear()
-            
-            # Deassert read_en once flash goes busy
             with m.If(flash_busy):
-                m.d.sync += fsm_flash_read_en.eq(0)
-            
-            # Wait for flash_read_valid
+                m.d.sync += flash_read_en.eq(0)
             with m.If(flash_read_valid):
-                with m.If(header_byte == 0):
-                    # Check magic byte 'N'
-                    with m.If(flash_read_data == ord('N')):
-                        m.d.sync += [
-                            header_byte.eq(1),
-                            fsm_flash_read_addr.eq(flash_read_addr + 1),
-                            fsm_flash_read_en.eq(1),  # Start next read immediately
-                        ]
-                    with m.Else():
-                        # Invalid magic, go back to IDLE
+                m.d.sync += [boot_byte.eq(boot_byte + 1),
+                             flash_read_addr.eq(flash_read_addr + 1),
+                             flash_read_en.eq(1)]
+                with m.Switch(boot_byte):
+                    with m.Case(0):
+                        with m.If(flash_read_data != ord('F')):
+                            m.d.sync += flash_read_en.eq(0)
+                            m.next = "IDLE"
+                    with m.Case(3):
+                        m.d.sync += num_fonts.eq(flash_read_data)
+                    with m.Default():
+                        with m.If(boot_byte == 7):
+                            m.d.sync += [font_idx.eq(0), boot_byte.eq(0)]
+                            m.next = "FONT_OFFSETS"
+
+        # ---- Offset table: MAX_FONTS x 4 bytes (32-bit BE) ----
+        with m.State("FONT_OFFSETS"):
+            with m.If(~enable):
+                m.d.sync += flash_read_en.eq(0)
+                m.next = "IDLE"
+            with m.If(flash_busy):
+                m.d.sync += flash_read_en.eq(0)
+            with m.If(flash_read_valid):
+                m.d.sync += [flash_read_addr.eq(flash_read_addr + 1),
+                             flash_read_en.eq(1),
+                             boot_byte.eq(boot_byte + 1)]
+                with m.Switch(boot_byte[:2]):
+                    with m.Case(1):
+                        for i in range(MAX_FONTS):
+                            with m.If(font_idx == i):
+                                m.d.sync += font_offset[i][16:24].eq(flash_read_data)
+                    with m.Case(2):
+                        for i in range(MAX_FONTS):
+                            with m.If(font_idx == i):
+                                m.d.sync += font_offset[i][8:16].eq(flash_read_data)
+                    with m.Case(3):
+                        for i in range(MAX_FONTS):
+                            with m.If(font_idx == i):
+                                m.d.sync += font_offset[i][0:8].eq(flash_read_data)
+                        m.d.sync += boot_byte.eq(0)
+                        with m.If(font_idx == MAX_FONTS - 1):
+                            m.d.sync += [font_idx.eq(0)]
+                            m.next = "FONT_ENTRY_HDR"
+                        with m.Else():
+                            m.d.sync += font_idx.eq(font_idx + 1)
+
+        # ---- Read font entry headers (24 bytes each) ----
+        with m.State("FONT_ENTRY_HDR"):
+            with m.If(~enable):
+                m.d.sync += flash_read_en.eq(0)
+                m.next = "IDLE"
+            with m.If(flash_busy):
+                m.d.sync += flash_read_en.eq(0)
+            with m.If(flash_read_valid):
+                m.d.sync += [flash_read_addr.eq(flash_read_addr + 1),
+                             flash_read_en.eq(1),
+                             boot_byte.eq(boot_byte + 1)]
+                with m.Switch(boot_byte):
+                    with m.Case(0x12):
+                        for i in range(MAX_FONTS):
+                            with m.If(font_idx == i):
+                                m.d.sync += font_orient[i].eq(flash_read_data)
+                    with m.Case(0x13):
+                        for i in range(MAX_FONTS):
+                            with m.If(font_idx == i):
+                                m.d.sync += font_height_reg[i].eq(flash_read_data)
+                    with m.Case(0x14):
+                        for i in range(MAX_FONTS):
+                            with m.If(font_idx == i):
+                                m.d.sync += font_width_reg[i].eq(flash_read_data)
+                    with m.Case(0x16):
+                        for i in range(MAX_FONTS):
+                            with m.If(font_idx == i):
+                                m.d.sync += font_shift[i].eq(flash_read_data[:4])
+                with m.If(boot_byte == 23):
+                    m.d.sync += boot_byte.eq(0)
+                    with m.If((font_idx + 1) >= num_fonts):
+                        m.d.sync += [fonts_loaded.eq(1), flash_read_en.eq(0)]
                         m.next = "IDLE"
-                
-                with m.Elif((header_byte >= 1) & (header_byte <= 3)):
-                    # Skip length bytes (we don't need them)
-                    m.d.sync += [
-                        header_byte.eq(header_byte + 1),
-                        fsm_flash_read_addr.eq(flash_read_addr + 1),
-                        fsm_flash_read_en.eq(1),  # Start next read immediately
-                    ]
-                
-                with m.Elif(header_byte == 4):
-                    # First byte of count (high byte)
-                    m.d.sync += [
-                        nick_count[8:16].eq(flash_read_data),
-                        header_byte.eq(5),
-                        fsm_flash_read_addr.eq(flash_read_addr + 1),
-                        fsm_flash_read_en.eq(1),  # Start next read immediately
-                    ]
-                
-                with m.Else():  # header_byte == 5
-                    # Second byte of count (low byte)
-                    m.d.sync += [
-                        nick_count[0:8].eq(flash_read_data),
-                        nick_valid.eq(1),
-                        current_nick.eq(0),
-                        next_nick_addr.eq(ADDR_NICK_START + 6),  # First nickname starts after header
-                    ]
-                    m.next = "FIND_NICK"
-        
-        # FIND_NICK: Navigate to the nickname we want to display
+                    with m.Else():
+                        m.d.sync += [font_idx.eq(font_idx + 1), flash_read_en.eq(0)]
+                        m.next = "FONT_ENTRY_SEEK"
+
+        with m.State("FONT_ENTRY_SEEK"):
+            with m.If(~enable):
+                m.next = "IDLE"
+            with m.Else():
+                for i in range(MAX_FONTS):
+                    with m.If(font_idx == i):
+                        m.d.sync += flash_read_addr.eq(font_offset[i] - 24)
+                m.d.sync += [flash_read_en.eq(1), boot_byte.eq(0)]
+                m.next = "FONT_ENTRY_HDR"
+
+        # ---- Nick header ----
+        with m.State("NICK_HDR"):
+            with m.If(~enable):
+                m.d.sync += flash_read_en.eq(0)
+                m.next = "IDLE"
+            with m.If(flash_busy):
+                m.d.sync += flash_read_en.eq(0)
+            with m.If(flash_read_valid):
+                m.d.sync += [boot_byte.eq(boot_byte + 1),
+                             flash_read_addr.eq(flash_read_addr + 1),
+                             flash_read_en.eq(1)]
+                with m.Switch(boot_byte):
+                    with m.Case(0):
+                        with m.If(flash_read_data != ord('N')):
+                            m.d.sync += flash_read_en.eq(0)
+                            m.next = "IDLE"
+                    with m.Case(3):
+                        m.d.sync += num_nicks.eq(flash_read_data)
+                    with m.Default():
+                        with m.If(boot_byte == 7):
+                            m.d.sync += [nicks_loaded.eq(1), flash_read_en.eq(0),
+                                         current_nick.eq(0)]
+                            m.next = "IDLE"
+
+        # ---- Find current nick ----
         with m.State("FIND_NICK"):
             with m.If(~enable):
                 m.next = "IDLE"
-            
-            m.d.sync += writer.clear()
-            
-            # Check if we've cycled through all nicknames
-            with m.If((current_nick >= nick_count) | (nick_count == 0)):
-                # Wrap back to first nickname
-                m.d.sync += [
-                    current_nick.eq(0),
-                    next_nick_addr.eq(ADDR_NICK_START + 6),  # First nickname after header
-                    fsm_flash_read_addr.eq(ADDR_NICK_START + 6),  # Use constant directly
-                    fsm_flash_read_en.eq(1),
-                ]
             with m.Else():
-                # Read the nickname at next_nick_addr
-                m.d.sync += [
-                    fsm_flash_read_addr.eq(next_nick_addr),
-                    fsm_flash_read_en.eq(1),
-                ]
-            m.next = "READ_NICK_LEN"
-        
-        # READ_NICK_LEN: Read the length of the nickname
-        with m.State("READ_NICK_LEN"):
+                with m.If(current_nick >= num_nicks):
+                    m.d.sync += current_nick.eq(0)
+                m.d.sync += [flash_read_addr.eq(ADDR_NICK_START + 8),
+                             nick_scan_count.eq(0), meta_byte.eq(0),
+                             flash_read_en.eq(1)]
+                m.next = "NICK_SCAN"
+
+        # Scan nick entry headers
+        with m.State("NICK_SCAN"):
             with m.If(~enable):
-                m.d.sync += fsm_flash_read_en.eq(0)
+                m.d.sync += flash_read_en.eq(0)
                 m.next = "IDLE"
-            
-            m.d.sync += writer.clear()
-            
-            # Deassert read_en once flash goes busy
             with m.If(flash_busy):
-                m.d.sync += fsm_flash_read_en.eq(0)
-            
-            # Wait for flash_read_valid
+                m.d.sync += flash_read_en.eq(0)
             with m.If(flash_read_valid):
-                m.d.sync += [
-                    nick_len.eq(flash_read_data),
-                    read_count.eq(0),
-                    char_store_count.eq(0),
-                    fsm_flash_read_addr.eq(flash_read_addr + 1),
-                    fsm_flash_read_en.eq(1),  # Start next read immediately
-                ]
-                m.next = "READ_NICK_DATA"
-        
-        # READ_NICK_DATA: Read nickname characters into buffer
-        with m.State("READ_NICK_DATA"):
-            with m.If(~enable):
-                m.d.sync += [
-                    fsm_flash_read_en.eq(0),
-                ]
-                m.next = "IDLE"
-            
-            m.d.sync += writer.clear()
-            
-            # Deassert read_en once flash goes busy
-            with m.If(flash_busy):
-                m.d.sync += fsm_flash_read_en.eq(0)
-            
-            # Wait for flash_read_valid
-            with m.If(flash_read_valid):
-                # Store character in buffer (up to MAX_DISPLAY_CHARS) - COMBINATIONAL write so it
-                # happens on THIS posedge (no 1-cycle delay)
-                with m.If(char_store_count < MAX_DISPLAY_CHARS):
-                    m.d.comb += [
-                        char_wr_en_comb.eq(1),
-                        char_wr_addr_comb.eq(char_store_count),
-                        char_wr_data_comb.eq(flash_read_data),
-                    ]
-                    m.d.sync += char_store_count.eq(char_store_count + 1)
-                
-                m.d.sync += [
-                    read_count.eq(read_count + 1),
-                    fsm_flash_read_addr.eq(flash_read_addr + 1),
-                ]
-                
-                # Check if this was the last character
-                with m.If(read_count == nick_len - 1):
-                    # All characters read, move to color reading
-                    m.d.sync += [
-                        color_component.eq(0),
-                        fsm_flash_read_en.eq(1),  # Start color read immediately
-                    ]
-                    m.next = "READ_COLOR"
-                with m.Else():
-                    # More characters to read
-                    m.d.sync += fsm_flash_read_en.eq(1)  # Start next read immediately
-        
-        # READ_COLOR: Read RGB color bytes
-        with m.State("READ_COLOR"):
-            with m.If(~enable):
-                m.d.sync += [
-                    fsm_flash_read_en.eq(0),
-                ]
-                m.next = "IDLE"
-            
-            m.d.sync += [
-                writer.clear(),
-            ]
-            
-            # Deassert read_en once flash goes busy
-            with m.If(flash_busy):
-                m.d.sync += fsm_flash_read_en.eq(0)
-            
-            # Wait for flash_read_valid
-            with m.If(flash_read_valid):
-                with m.If(color_component == 0):
-                    m.d.sync += [
-                        nick_color_r.eq(flash_read_data),
-                        color_component.eq(1),
-                        fsm_flash_read_addr.eq(flash_read_addr + 1),
-                        fsm_flash_read_en.eq(1),  # Start next read immediately
-                    ]
-                with m.Elif(color_component == 1):
-                    m.d.sync += [
-                        nick_color_g.eq(flash_read_data),
-                        color_component.eq(2),
-                        fsm_flash_read_addr.eq(flash_read_addr + 1),
-                        fsm_flash_read_en.eq(1),  # Start next read immediately
-                    ]
-                with m.Else():  # color_component == 2
-                    m.d.sync += [
-                        nick_color_b.eq(flash_read_data),
-                        color_loaded.eq(1),  # Mark colors as loaded
-                        display_timer.eq(0),  # Start display timer
-                        char_idx.eq(0),
-                        # Update next_nick_addr to point to next nickname (current addr + 1)
-                        next_nick_addr.eq(flash_read_addr + 1),
-                        # Update nick_len to reflect actual displayed chars (min of nick_len and MAX_DISPLAY_CHARS)
-                    ]
-                    # Clamp displayed length to MAX_DISPLAY_CHARS
-                    with m.If(nick_len > MAX_DISPLAY_CHARS):
-                        m.d.sync += nick_len.eq(MAX_DISPLAY_CHARS)
-                    m.next = "RENDER_INIT"
-        
-        # RENDER_INIT: Initialize rendering state
-        with m.State("RENDER_INIT"):
-            with m.If(~enable):
-                m.next = "IDLE"
-            with m.Else():
-                # Reset ALL rendering state when entering mode
-                # This ensures clean slate regardless of previous mode state
-                m.d.sync += [
-                    # Position and indexing
-                    char_idx.eq(0),
-                    disp_x.eq(0),
-                    disp_y.eq(0),
-                    char_lookup_addr.eq(0),
-                    # Font rendering interface
-                    font_render_enable.eq(0),
-                    font_char_code.eq(0),
-                ]
-                m.next = "CLEAR_DISPLAY"
-        
-        # CLEAR_DISPLAY: Write black to all LEDs to clear leftover data from other modes
-        with m.State("CLEAR_DISPLAY"):
-            with m.If(~enable):
-                m.next = "IDLE"
-            with m.Else():
-                # Write black pixel at current position
-                m.d.sync += writer.set_led(x=disp_x, y=disp_y, r=0, g=0, b=0)
-                
-                # Move to next position
-                with m.If(disp_y == height - 1):
-                    # End of column, move to next column
-                    with m.If(disp_x == width - 1):
-                        # All LEDs cleared, start rendering
-                        m.d.sync += [
-                            disp_x.eq(0),
-                            disp_y.eq(0),
-                            char_idx.eq(0),
-                        ]
-                        m.next = "FETCH_CHAR"
+                m.d.sync += [flash_read_addr.eq(flash_read_addr + 1),
+                             flash_read_en.eq(1),
+                             meta_byte.eq(meta_byte + 1)]
+                with m.Switch(meta_byte):
+                    with m.Case(4): m.d.sync += nick_fg_r.eq(flash_read_data)
+                    with m.Case(5): m.d.sync += nick_fg_g.eq(flash_read_data)
+                    with m.Case(6): m.d.sync += nick_fg_b.eq(flash_read_data)
+                    with m.Case(7): m.d.sync += nick_bg_r.eq(flash_read_data)
+                    with m.Case(8): m.d.sync += nick_bg_g.eq(flash_read_data)
+                    with m.Case(9): m.d.sync += nick_bg_b.eq(flash_read_data)
+                    with m.Case(11): m.d.sync += nick_strlen.eq(flash_read_data)
+                with m.If(meta_byte == 15):
+                    with m.If(nick_scan_count >= current_nick):
+                        m.d.sync += [load_count.eq(0), flash_read_en.eq(0)]
+                        m.next = "NICK_LOAD_TEXT"
                     with m.Else():
-                        m.d.sync += [
-                            disp_x.eq(disp_x + 1),
-                            disp_y.eq(0),
-                        ]
+                        m.next = "NICK_SKIP"
+
+        with m.State("NICK_SKIP"):
+            with m.If(~enable):
+                m.d.sync += flash_read_en.eq(0)
+                m.next = "IDLE"
+            with m.Else():
+                m.d.sync += [
+                    flash_read_addr.eq(flash_read_addr + ((nick_strlen + 7) & 0xF8)),
+                    nick_scan_count.eq(nick_scan_count + 1),
+                    meta_byte.eq(0), flash_read_en.eq(1),
+                ]
+                m.next = "NICK_SCAN"
+
+        with m.State("NICK_LOAD_TEXT"):
+            with m.If(~enable):
+                m.d.sync += flash_read_en.eq(0)
+                m.next = "IDLE"
+            with m.Else():
+                with m.If(load_count >= nick_strlen):
+                    m.d.sync += nick_loaded.eq(1)
+                    m.next = "SETUP_RENDER"
                 with m.Else():
-                    m.d.sync += disp_y.eq(disp_y + 1)
-        
-        # FETCH_CHAR: Read character from buffer and request font pattern
-        with m.State("FETCH_CHAR"):
+                    m.d.sync += flash_read_en.eq(1)
+                    m.next = "NICK_LOAD_RD"
+
+        with m.State("NICK_LOAD_RD"):
+            with m.If(~enable):
+                m.d.sync += flash_read_en.eq(0)
+                m.next = "IDLE"
+            with m.If(flash_busy):
+                m.d.sync += flash_read_en.eq(0)
+            with m.If(flash_read_valid):
+                m.d.comb += [nm_wr_en.eq(1), nm_wr_addr.eq(load_count[:5]),
+                             nm_wr_data.eq(flash_read_data)]
+                m.d.sync += [load_count.eq(load_count + 1),
+                             flash_read_addr.eq(flash_read_addr + 1)]
+                with m.If(load_count >= nick_strlen - 1):
+                    m.d.sync += [nick_loaded.eq(1), flash_read_en.eq(0)]
+                    m.next = "SETUP_RENDER"
+                with m.Else():
+                    m.d.sync += flash_read_en.eq(1)
+
+        # ---- Setup rendering ----
+        with m.State("SETUP_RENDER"):
             with m.If(~enable):
                 m.next = "IDLE"
             with m.Else():
-                # Check if we've rendered all characters
-                with m.If(char_idx >= nick_len):
-                    # All characters rendered, go to display
-                    m.d.sync += [
-                        disp_x.eq(0),
-                        disp_y.eq(0),
-                    ]
+                for i in range(MAX_FONTS):
+                    with m.If(current_font == i):
+                        m.d.sync += [
+                            active_orient.eq(font_orient[i]),
+                            active_height.eq(font_height_reg[i]),
+                            active_width.eq(font_width_reg[i]),
+                            active_shift.eq(font_shift[i]),
+                            active_offset.eq(font_offset[i]),
+                        ]
+                        with m.If(font_orient[i] == ord('H')):
+                            m.d.sync += [render_cols.eq(height),
+                                         render_rows_max.eq(width - 1)]
+                        with m.Else():
+                            m.d.sync += [render_cols.eq(width),
+                                         render_rows_max.eq(height - 1)]
+                m.d.sync += [scroll_offset.eq(0), scroll_dir.eq(0),
+                             scroll_paused.eq(1), pause_count.eq(0),
+                             scroll_timer.eq(0), nick_pixel_width.eq(0),
+                             char_idx.eq(0)]
+                m.next = "CALC_PW_LOOP"
+
+        # Compute nick_pixel_width = nick_strlen * active_width (iterative add)
+        with m.State("CALC_PW_LOOP"):
+            with m.If(~enable):
+                m.next = "IDLE"
+            with m.Else():
+                with m.If(char_idx >= nick_strlen):
+                    with m.If(active_orient == ord('H')):
+                        with m.If(nick_pixel_width[:8] > height):
+                            m.d.sync += [needs_scroll.eq(1),
+                                         scroll_max.eq(nick_pixel_width[:8] - height)]
+                        with m.Else():
+                            m.d.sync += [needs_scroll.eq(0), scroll_max.eq(0)]
+                    with m.Else():
+                        with m.If(nick_pixel_width[:8] > width):
+                            m.d.sync += [needs_scroll.eq(1),
+                                         scroll_max.eq(nick_pixel_width[:8] - width)]
+                        with m.Else():
+                            m.d.sync += [needs_scroll.eq(0), scroll_max.eq(0)]
+                    m.d.sync += [char_idx.eq(0), glyph_col.eq(0), render_col.eq(0)]
+                    m.next = "RENDER_START"
+                with m.Else():
+                    m.d.sync += [nick_pixel_width.eq(nick_pixel_width + active_width),
+                                 char_idx.eq(char_idx + 1)]
+
+        # ---- Render loop ----
+        with m.State("RENDER_START"):
+            with m.If(~enable):
+                m.next = "IDLE"
+            with m.Else():
+                m.d.sync += display_col.eq(scroll_offset + render_col)
+                m.next = "RENDER_CALC_CHAR"
+
+        # Divide display_col by active_width to get char_idx and glyph_col
+        with m.State("RENDER_CALC_CHAR"):
+            with m.If(~enable):
+                m.next = "IDLE"
+            with m.Else():
+                with m.If((scroll_mode == 1) & (display_col < render_cols)):
+                    # Marquee leading blank: draw background
+                    m.d.sync += [col_data_lo.eq(0), col_data_hi.eq(0),
+                                 render_row.eq(0)]
+                    m.next = "RENDER_ROWS"
+                with m.Else():
+                    with m.If(scroll_mode == 1):
+                        m.d.sync += [char_idx.eq(0),
+                                     glyph_col.eq(display_col - render_cols)]
+                    with m.Else():
+                        m.d.sync += [char_idx.eq(0), glyph_col.eq(display_col)]
+                    m.next = "RENDER_DIV"
+
+        with m.State("RENDER_DIV"):
+            with m.If(~enable):
+                m.next = "IDLE"
+            with m.Else():
+                with m.If(glyph_col >= active_width):
+                    m.d.sync += [glyph_col.eq(glyph_col - active_width),
+                                 char_idx.eq(char_idx + 1)]
+                with m.Else():
+                    with m.If(char_idx >= nick_strlen):
+                        m.d.sync += [col_data_lo.eq(0), col_data_hi.eq(0),
+                                     render_row.eq(0)]
+                        m.next = "RENDER_ROWS"
+                    with m.Else():
+                        m.d.comb += nm_rd_addr.eq(char_idx[:5])
+                        m.next = "RENDER_RD_CHAR"
+
+        # Wait for BRAM read
+        with m.State("RENDER_RD_CHAR"):
+            with m.If(~enable):
+                m.next = "IDLE"
+            with m.Else():
+                m.d.comb += nm_rd_addr.eq(char_idx[:5])
+                m.next = "RENDER_FETCH"
+
+        # Compute glyph flash addr and start reading
+        with m.State("RENDER_FETCH"):
+            with m.If(~enable):
+                m.d.sync += flash_read_en.eq(0)
+                m.next = "IDLE"
+            with m.Else():
+                char_code_sig = Signal(8, name="fetch_cc")
+                m.d.comb += char_code_sig.eq(nm_rd.data)
+                shifted = Signal(16, name="shifted")
+                for s in [3, 4, 5, 6]:
+                    with m.If(active_shift == s):
+                        m.d.comb += shifted.eq(char_code_sig << s)
+                glyph_base = Signal(24, name="glyph_base")
+                m.d.comb += glyph_base.eq(active_offset + shifted[:16])
+                col_addr = Signal(24, name="col_addr")
+                with m.If(active_height > 8):
+                    m.d.comb += col_addr.eq(glyph_base + (glyph_col << 1))
+                with m.Else():
+                    m.d.comb += col_addr.eq(glyph_base + glyph_col)
+                m.d.sync += [flash_read_addr.eq(col_addr), flash_read_en.eq(1)]
+                m.next = "RENDER_RD_LO"
+
+        with m.State("RENDER_RD_LO"):
+            with m.If(~enable):
+                m.d.sync += flash_read_en.eq(0)
+                m.next = "IDLE"
+            with m.If(flash_busy):
+                m.d.sync += flash_read_en.eq(0)
+            with m.If(flash_read_valid):
+                m.d.sync += col_data_lo.eq(flash_read_data)
+                with m.If(active_height > 8):
+                    m.d.sync += [flash_read_addr.eq(flash_read_addr + 1),
+                                 flash_read_en.eq(1)]
+                    m.next = "RENDER_RD_HI"
+                with m.Else():
+                    m.d.sync += [col_data_hi.eq(0), render_row.eq(0),
+                                 flash_read_en.eq(0)]
+                    m.next = "RENDER_ROWS"
+
+        with m.State("RENDER_RD_HI"):
+            with m.If(~enable):
+                m.d.sync += flash_read_en.eq(0)
+                m.next = "IDLE"
+            with m.If(flash_busy):
+                m.d.sync += flash_read_en.eq(0)
+            with m.If(flash_read_valid):
+                m.d.sync += [col_data_hi.eq(flash_read_data), render_row.eq(0),
+                             flash_read_en.eq(0)]
+                m.next = "RENDER_ROWS"
+
+        with m.State("RENDER_ROWS"):
+            with m.If(~enable):
+                m.next = "IDLE"
+            with m.Else():
+                pixel_bit = Signal(name="pixel_bit")
+                with m.If(render_row < 8):
+                    m.d.comb += pixel_bit.eq(col_data_lo.bit_select(render_row[:3], 1))
+                with m.Else():
+                    m.d.comb += pixel_bit.eq(col_data_hi.bit_select(render_row[:3], 1))
+                display_x = Signal(4, name="display_x")
+                display_y = Signal(5, name="display_y")
+                with m.If(active_orient == ord('H')):
+                    m.d.comb += [display_x.eq(width - 1 - render_row),
+                                 display_y.eq(render_col)]
+                with m.Else():
+                    m.d.comb += [display_x.eq(render_cols - 1 - render_col),
+                                 display_y.eq(render_rows_max - render_row)]
+                with m.If(pixel_bit):
+                    m.d.sync += writer.set_led(x=display_x, y=display_y,
+                                              r=nick_fg_r, g=nick_fg_g, b=nick_fg_b)
+                with m.Else():
+                    m.d.sync += writer.set_led(x=display_x, y=display_y,
+                                              r=nick_bg_r, g=nick_bg_g, b=nick_bg_b)
+                with m.If(render_row == render_rows_max):
+                    m.next = "NEXT_COL"
+                with m.Else():
+                    m.d.sync += render_row.eq(render_row + 1)
+
+        with m.State("NEXT_COL"):
+            with m.If(~enable):
+                m.next = "IDLE"
+            with m.Else():
+                with m.If(render_col == render_cols - 1):
                     m.next = "DISPLAY"
                 with m.Else():
-                    # Set up character buffer read address
-                    m.d.sync += char_lookup_addr.eq(char_idx)
-                    m.next = "WAIT_CHAR"
-        
-        # WAIT_CHAR: Wait one cycle for sync memory read to produce data
-        with m.State("WAIT_CHAR"):
-            with m.If(~enable):
-                m.next = "IDLE"
-            with m.Else():
-                # char_read is now valid (1 cycle after addr was set)
-                m.next = "RENDER_FONT"
-        
-        # RENDER_FONT: Request font pattern from font_render module
-        with m.State("RENDER_FONT"):
-            with m.If(~enable):
-                m.d.sync += font_render_enable.eq(0)
-                m.next = "IDLE"
-            with m.Else():
-                # Start font lookup on first cycle
-                with m.If(~font_render_enable):
-                    m.d.sync += [
-                        font_char_code.eq(char_read),
-                        font_render_enable.eq(1),
-                        disp_y.eq(0),
-                    ]
-                
-                # Wait for font_render to complete
-                with m.If(font_render_done):
-                    m.d.sync += [
-                        font_render_enable.eq(0),
-                        disp_y.eq(0),
-                    ]
-                    # Debug: latch segment pattern nibble for 1st char
-                    with m.If(char_idx == 0):
-                        m.d.sync += debug_font_nibble.eq(font_segment_pattern[8:12])
-                    m.next = "RENDER_SEGMENTS"
-        
-        # RENDER_SEGMENTS: Write 16 LEDs based on segment pattern
-        with m.State("RENDER_SEGMENTS"):
-            with m.If(~enable):
-                m.next = "IDLE"
-            with m.Else():
-                # Each character occupies one x position (digit)
-                # 16 y positions correspond to 16 segments
-                segment_bit = Signal(name="segment_bit")
-                m.d.comb += segment_bit.eq(font_segment_pattern.bit_select(disp_y, 1))
-                
-                # Set LED based on segment bit
-                with m.If(segment_bit):
-                    m.d.sync += writer.set_led(
-                        x=char_idx,
-                        y=disp_y,
-                        r=nick_color_r,
-                        g=nick_color_g,
-                        b=nick_color_b
-                    )
-                with m.Else():
-                    m.d.sync += writer.set_led(x=char_idx, y=disp_y, r=0, g=0, b=0)
-                
-                # Move to next segment
-                with m.If(disp_y == height - 1):
-                    # All segments written for this character
-                    m.next = "NEXT_CHAR"
-                with m.Else():
-                    m.d.sync += disp_y.eq(disp_y + 1)
-        
-        # NEXT_CHAR: Move to next character
-        with m.State("NEXT_CHAR"):
-            with m.If(~enable):
-                m.next = "IDLE"
-            with m.Else():
-                m.d.sync += char_idx.eq(char_idx + 1)
-                m.next = "FETCH_CHAR"
-        
-        # DISPLAY: Show rendered nickname for ~2 seconds, then cycle to next
+                    m.d.sync += render_col.eq(render_col + 1)
+                    m.next = "RENDER_START"
+
+        # ---- Display: scroll + buttons ----
         with m.State("DISPLAY"):
             with m.If(~enable):
                 m.next = "IDLE"
             with m.Else():
-                # Increment display timer
-                m.d.sync += display_timer.eq(display_timer + 1)
-                
-                # Check if it's time to switch to next nickname
-                with m.If((display_timer >= DISPLAY_TIME) | short_press):
-                    m.d.sync += [
-                        display_timer.eq(0),
-                        current_nick.eq(current_nick + 1),
-                    ]
+                with m.If(short_press):
+                    m.d.sync += [current_nick.eq(current_nick + 1), nick_loaded.eq(0)]
                     m.next = "FIND_NICK"
-    
-    # Flash multiplexing between nick's FSM and font_render:
-    # - When font_flash_read_en is asserted, font_render controls flash
-    # - Otherwise, nick's FSM controls flash
-    # - font_flash_read_valid/busy/ready come from flash controller back to font_render
-    
-    # Forward flash status to font_render (it always sees these)
-    m.d.comb += [
-        font_flash_read_valid.eq(flash_read_valid),
-        font_flash_busy.eq(flash_busy),
-        font_flash_ready.eq(flash_ready),
-    ]
-    
-    # Multiplex flash control: font_render takes priority when it asserts read_en
-    from amaranth.hdl import Mux
-    m.d.comb += [
-        flash_read_en.eq(Mux(font_flash_read_en, font_flash_read_en, fsm_flash_read_en)),
-        flash_read_addr.eq(Mux(font_flash_read_en, font_flash_read_addr, fsm_flash_read_addr)),
-    ]
-    
-    # Port list for Verilog generation
+                with m.Elif(pending_right | btn_right):
+                    m.d.comb += consume_right.eq(1)
+                    with m.If((current_font + 1) >= num_fonts):
+                        m.d.sync += current_font.eq(0)
+                    with m.Else():
+                        m.d.sync += current_font.eq(current_font + 1)
+                    m.next = "SETUP_RENDER"
+                with m.Elif(pending_left | btn_left):
+                    m.d.comb += consume_left.eq(1)
+                    m.d.sync += [scroll_mode.eq(~scroll_mode),
+                                 scroll_offset.eq(0), scroll_dir.eq(0),
+                                 scroll_paused.eq(1), pause_count.eq(0),
+                                 scroll_timer.eq(0), render_col.eq(0)]
+                    m.next = "RENDER_START"
+                with m.Elif(needs_scroll):
+                    m.d.sync += scroll_timer.eq(scroll_timer + 1)
+                    with m.If(scroll_timer == (1 << SCROLL_STEP_BITS)):
+                        m.d.sync += scroll_timer.eq(0)
+                        with m.If(scroll_paused):
+                            with m.If(pause_count >= SCROLL_PAUSE_STEPS):
+                                m.d.sync += [scroll_paused.eq(0), pause_count.eq(0)]
+                            with m.Else():
+                                m.d.sync += pause_count.eq(pause_count + 1)
+                        with m.Else():
+                            with m.If(scroll_mode == 0):
+                                with m.If(scroll_dir == 0):
+                                    with m.If(scroll_offset >= scroll_max):
+                                        m.d.sync += [scroll_paused.eq(1),
+                                                     scroll_dir.eq(1), pause_count.eq(0)]
+                                    with m.Else():
+                                        m.d.sync += [scroll_offset.eq(scroll_offset + 1),
+                                                     render_col.eq(0)]
+                                        m.next = "RENDER_START"
+                                with m.Else():
+                                    with m.If(scroll_offset == 0):
+                                        m.d.sync += [scroll_paused.eq(1),
+                                                     scroll_dir.eq(0), pause_count.eq(0)]
+                                    with m.Else():
+                                        m.d.sync += [scroll_offset.eq(scroll_offset - 1),
+                                                     render_col.eq(0)]
+                                        m.next = "RENDER_START"
+                            with m.Else():
+                                with m.If(scroll_offset >= (nick_pixel_width[:8] + render_cols + render_cols)):
+                                    m.d.sync += [scroll_offset.eq(0), render_col.eq(0)]
+                                    m.next = "RENDER_START"
+                                with m.Else():
+                                    m.d.sync += [scroll_offset.eq(scroll_offset + 1),
+                                                 render_col.eq(0)]
+                                    m.next = "RENDER_START"
+
     ports = [
-        enable,
-        short_press,
-        flash_read_en, flash_read_addr, flash_read_data, flash_read_valid, flash_busy, flash_ready,
-        font_char_code, font_render_enable, font_render_done, font_busy, font_segment_pattern,
-        font_flash_read_en, font_flash_read_addr, font_flash_read_valid, font_flash_busy, font_flash_ready,
+        enable, short_press, btn_right, btn_left,
+        flash_read_en, flash_read_addr, flash_read_data,
+        flash_read_valid, flash_busy, flash_ready,
         debug_font_nibble,
     ] + writer.signals
-    
     return m, ports
-
 
 def main():
     if len(sys.argv) != 2:
         print("Usage: python3 src/nick.py path/to/output.v")
         sys.exit(1)
-    
     out = sys.argv[1]
-    m, ports = make_nick(width=8, height=16)
-    
+    m, ports = make_nick(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT)
     v = verilog.convert(m, name="nick_module", ports=ports)
-    
     with open(out, "w") as f:
         f.write(v)
-    
     print(f"Wrote {out}")
 
 
