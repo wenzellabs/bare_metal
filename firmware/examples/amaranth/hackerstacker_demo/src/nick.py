@@ -108,7 +108,7 @@ def make_nick(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT):
     pause_count = Signal(5)
     scroll_max = Signal(8)
     needs_scroll = Signal()
-    scroll_mode = Signal()
+    scroll_mode = Signal(reset=1)
 
     # FSM counters
     boot_byte = Signal(5, name="boot_byte")

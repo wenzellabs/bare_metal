@@ -166,7 +166,7 @@ $(COMBINED_BIN): $(BIN) $(IMAGE_BIN)
 NICK_TXT = nick.txt
 NICK_BIN = build/nick.bin
 NICK_CONVERTER = host/nick_convert.py
-NICK_FONTS = fonts/04B_30__.TTF:16 fonts/04B_03B_.TTF:8
+NICK_FONTS = fonts/04B_03B_.TTF:8 fonts/04B_30__.TTF:16
 
 $(NICK_BIN): $(NICK_TXT) $(NICK_CONVERTER)
 	@mkdir -p $(BUILD)
