@@ -17,9 +17,9 @@ module top(
     output led_ci,          // SK9822 clock (SCLK)
     output led_power_on,    // enable RGB LED power
     // Debug LEDs (active-high white LEDs)
-    output led_pinky,       // MSB of mode
-    output led_middle,
-    output led_index,       // LSB of mode
+    output led_pinky,       // pinky finger
+    output led_middle,      // Ortsteil pommesgabel mitte
+    output led_index,       // index finger
     // SPI Flash pins
     output spi_csn_flash,   // Flash chip select (F7)
     output spi_clk,         // Flash clock (G7)
@@ -32,28 +32,18 @@ module top(
     // Enable LED power at start
     assign led_power_on = 1'b1;
     
+    // turn off white LEDs
+    assign led_pinky = 1'b1;  // active-low, drive HIGH to turn off
+    assign led_middle = 1'b1;
+    assign led_index = 1'b1;
+
     // SPI flash: deassert WP# and HOLD# (active-low, drive HIGH to disable)
     assign spi_wp   = 1'b1;
     assign spi_hold = 1'b1;
     
-    // Flash debug on white LEDs (active-low: 0=on, 1=off)
-    // Capture first 3 bytes read from nick's flash client
-    // Expected: 0x4E ('N'), 0x00, 0x00 from nick header at 0x0A0000
-    // Show byte 0 on LEDs: led_pinky=bit2, led_middle=bit1, led_index=bit0
-    reg [7:0] dbg_byte0;
-    reg dbg_captured;
-    always @(posedge clk_12M) begin
-        if (nick_flash_read_valid & ~dbg_captured) begin
-            dbg_byte0 <= nick_flash_read_data;
-            dbg_captured <= 1'b1;
-        end
-    end
     // 0x4E = 0100_1110 -> bits[2:0] = 110 -> pinky=1(off), middle=on, index=off
     // 0xFF = all 1s -> all off (all LEDs dark)
     // 0x00 = all 0s -> all on
-    assign led_index  = dbg_captured ? dbg_byte0[0] : 1'b1;  // off until captured
-    assign led_middle = dbg_captured ? dbg_byte0[1] : 1'b1;
-    assign led_pinky  = dbg_captured ? dbg_byte0[2] : 1'b1;
     
     // Button handler signals
     wire short_press, long_press;

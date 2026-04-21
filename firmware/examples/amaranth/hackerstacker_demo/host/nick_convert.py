@@ -47,7 +47,7 @@ def parse_nick_file(path):
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
-            parts = line.split(',')
+            parts = line.split('~')
             if len(parts) < 4:
                 continue
             name = parts[0]

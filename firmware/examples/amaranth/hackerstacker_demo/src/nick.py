@@ -17,7 +17,7 @@ from sk9822 import SK9822Writer
 DISPLAY_WIDTH = 8
 DISPLAY_HEIGHT = 16
 MAX_FONTS = 4
-MAX_NICK_LEN = 32
+MAX_NICK_LEN = 256
 SCROLL_STEP_BITS = 19
 SCROLL_PAUSE_STEPS = 15
 
@@ -70,10 +70,10 @@ def make_nick(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT):
     m.submodules.nick_mem = nick_mem
     nm_wr = nick_mem.write_port()
     nm_rd = nick_mem.read_port(domain="sync", transparent_for=())
-    nm_wr_addr = Signal(5)
+    nm_wr_addr = Signal(8)
     nm_wr_data = Signal(8)
     nm_wr_en = Signal()
-    nm_rd_addr = Signal(5)
+    nm_rd_addr = Signal(8)
     m.d.comb += [
         nm_wr.addr.eq(nm_wr_addr), nm_wr.data.eq(nm_wr_data), nm_wr.en.eq(nm_wr_en),
         nm_rd.addr.eq(nm_rd_addr),
@@ -89,24 +89,24 @@ def make_nick(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT):
     # Display geometry
     render_cols = Signal(5, name="render_cols")
     render_rows_max = Signal(5, name="render_rows_max")
-    nick_pixel_width = Signal(10, name="nick_pixel_width")
+    nick_pixel_width = Signal(12, name="nick_pixel_width")
 
     # Rendering state
-    char_idx = Signal(5, name="char_idx")
-    glyph_col = Signal(8, name="glyph_col")
-    display_col = Signal(8, name="display_col")
+    char_idx = Signal(8, name="char_idx")
+    glyph_col = Signal(12, name="glyph_col")
+    display_col = Signal(12, name="display_col")
     render_col = Signal(5, name="render_col")
     render_row = Signal(5, name="render_row")
     col_data_lo = Signal(8, name="col_data_lo")
     col_data_hi = Signal(8, name="col_data_hi")
 
     # Scrolling
-    scroll_offset = Signal(8, name="scroll_offset")
+    scroll_offset = Signal(12, name="scroll_offset")
     scroll_dir = Signal()
     scroll_timer = Signal(SCROLL_STEP_BITS + 1)
     scroll_paused = Signal()
     pause_count = Signal(5)
-    scroll_max = Signal(8)
+    scroll_max = Signal(12)
     needs_scroll = Signal()
     scroll_mode = Signal(reset=1)
 
@@ -117,8 +117,6 @@ def make_nick(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT):
     meta_byte = Signal(4)
     load_count = Signal(8)
     nick_loaded = Signal()
-
-    debug_font_nibble = Signal(4, name="debug_font_nibble")
 
     # Button pending latches
     pending_right = Signal()
@@ -349,7 +347,8 @@ def make_nick(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT):
             with m.If(flash_busy):
                 m.d.sync += flash_read_en.eq(0)
             with m.If(flash_read_valid):
-                m.d.comb += [nm_wr_en.eq(1), nm_wr_addr.eq(load_count[:5]),
+                # write full 8-bit load_count into BRAM address (support full 256 length)
+                m.d.comb += [nm_wr_en.eq(1), nm_wr_addr.eq(load_count),
                              nm_wr_data.eq(flash_read_data)]
                 m.d.sync += [load_count.eq(load_count + 1),
                              flash_read_addr.eq(flash_read_addr + 1)]
@@ -392,15 +391,15 @@ def make_nick(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT):
             with m.Else():
                 with m.If(char_idx >= nick_strlen):
                     with m.If(active_orient == ord('H')):
-                        with m.If(nick_pixel_width[:8] > height):
+                        with m.If(nick_pixel_width > height):
                             m.d.sync += [needs_scroll.eq(1),
-                                         scroll_max.eq(nick_pixel_width[:8] - height)]
+                                         scroll_max.eq(nick_pixel_width - height)]
                         with m.Else():
                             m.d.sync += [needs_scroll.eq(0), scroll_max.eq(0)]
                     with m.Else():
-                        with m.If(nick_pixel_width[:8] > width):
+                        with m.If(nick_pixel_width > width):
                             m.d.sync += [needs_scroll.eq(1),
-                                         scroll_max.eq(nick_pixel_width[:8] - width)]
+                                         scroll_max.eq(nick_pixel_width - width)]
                         with m.Else():
                             m.d.sync += [needs_scroll.eq(0), scroll_max.eq(0)]
                     m.d.sync += [char_idx.eq(0), glyph_col.eq(0), render_col.eq(0)]
@@ -448,7 +447,8 @@ def make_nick(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT):
                                      render_row.eq(0)]
                         m.next = "RENDER_ROWS"
                     with m.Else():
-                        m.d.comb += nm_rd_addr.eq(char_idx[:5])
+                        # read full 8-bit char_idx from BRAM
+                        m.d.comb += nm_rd_addr.eq(char_idx)
                         m.next = "RENDER_RD_CHAR"
 
         # Wait for BRAM read
@@ -456,7 +456,8 @@ def make_nick(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT):
             with m.If(~enable):
                 m.next = "IDLE"
             with m.Else():
-                m.d.comb += nm_rd_addr.eq(char_idx[:5])
+                # read full 8-bit char_idx from BRAM
+                m.d.comb += nm_rd_addr.eq(char_idx)
                 m.next = "RENDER_FETCH"
 
         # Compute glyph flash addr and start reading
@@ -597,7 +598,8 @@ def make_nick(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT):
                                                      render_col.eq(0)]
                                         m.next = "RENDER_START"
                             with m.Else():
-                                with m.If(scroll_offset >= (nick_pixel_width[:8] + render_cols + render_cols)):
+                                # Marquee scroll logic
+                                with m.If(scroll_offset >= (nick_pixel_width + render_cols + render_cols)):
                                     m.d.sync += [scroll_offset.eq(0), render_col.eq(0)]
                                     m.next = "RENDER_START"
                                 with m.Else():
@@ -609,9 +611,10 @@ def make_nick(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT):
         enable, short_press, btn_right, btn_left,
         flash_read_en, flash_read_addr, flash_read_data,
         flash_read_valid, flash_busy, flash_ready,
-        debug_font_nibble,
     ] + writer.signals
     return m, ports
+
+
 
 def main():
     if len(sys.argv) != 2:
