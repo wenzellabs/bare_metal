@@ -45,18 +45,13 @@ from amaranth import Module, Signal, Cat, Const
 from amaranth.back import verilog
 
 
-def make_font_render():
+def make_font_render(base_addr=0x080858, shift=3, bytes_to_read=8):
     """Create font renderer module.
 
     Returns:
         (module, ports) tuple
     """
     m = Module()
-
-    # Flash address for font data
-    # Font lives at 0x080000, slots are 16 bytes each.
-    # Address = {0x080, char_code[7:0], 4'b0000} - pure wiring, zero adders.
-    ADDR_FONT_PAGE = 0x080  # upper 12 bits: 0x080000 >> 12 = 0x080
 
     # Control interface
     char_code = Signal(8, name="char_code")           # ASCII character to look up
@@ -65,7 +60,7 @@ def make_font_render():
     busy = Signal(name="busy")                        # Lookup in progress
 
     # Output
-    segment_pattern = Signal(16, name="segment_pattern")  # 16-bit segment pattern
+    segment_pattern = Signal(bytes_to_read * 8, name="segment_pattern")  # Segment pattern
 
     # Flash controller interface
     flash_read_en = Signal(name="flash_read_en")
@@ -76,7 +71,7 @@ def make_font_render():
     flash_ready = Signal(name="flash_ready")
 
     # Internal
-    segment_high = Signal(8, name="segment_high")     # High byte of segment pattern
+    byte_idx = Signal(4, name="byte_idx")
     render_enable_prev = Signal(name="render_enable_prev")  # For edge detection
     render_enable_rising = Signal(name="render_enable_rising")
 
@@ -84,7 +79,7 @@ def make_font_render():
     m.d.sync += render_enable_prev.eq(render_enable)
     m.d.comb += render_enable_rising.eq(render_enable & ~render_enable_prev)
 
-    # State machine for font lookup - only 4 states now!
+    # State machine for font lookup
     with m.FSM(name="font_fsm") as fsm:
         m.d.comb += busy.eq(~fsm.ongoing("IDLE"))
 
@@ -93,45 +88,37 @@ def make_font_render():
             m.d.sync += [
                 render_done.eq(0),
                 flash_read_en.eq(0),
+                byte_idx.eq(0),
             ]
 
             with m.If(render_enable_rising):
-                # Direct indexed lookup - pure wiring, zero adders:
-                # addr = {0x050 (12 bits), char_code (8 bits), 0000 (4 bits)}
+                # Optimize adder: upper 12 bits are constant 0x080.
+                addr_low = Signal(12)
+                m.d.comb += addr_low.eq((base_addr & 0xFFF) + (char_code << shift))
                 m.d.sync += [
-                    flash_read_addr.eq(
-                        Cat(Const(0, 4), char_code, Const(ADDR_FONT_PAGE, 12))
-                    ),
+                    flash_read_addr.eq(Cat(addr_low, Const(base_addr >> 12, 12))),
                     flash_read_en.eq(1),
                 ]
-                m.next = "READ_HIGH"
+                m.next = "READ_BYTE"
 
-        # READ_HIGH: Read high byte of segment pattern
-        with m.State("READ_HIGH"):
+        with m.State("READ_BYTE"):
             with m.If(flash_busy):
                 m.d.sync += flash_read_en.eq(0)
 
             with m.If(flash_read_valid):
-                m.d.sync += [
-                    segment_high.eq(flash_read_data),
-                    flash_read_addr.eq(flash_read_addr + 1),
-                    flash_read_en.eq(1),
-                ]
-                m.next = "READ_LOW"
-
-        # READ_LOW: Read low byte of segment pattern
-        with m.State("READ_LOW"):
-            with m.If(flash_busy):
-                m.d.sync += flash_read_en.eq(0)
-
-            with m.If(flash_read_valid):
-                # Combine high and low bytes into 16-bit pattern
-                m.d.sync += [
-                    segment_pattern[8:16].eq(segment_high),
-                    segment_pattern[0:8].eq(flash_read_data),
-                    render_done.eq(1),
-                ]
-                m.next = "IDLE"
+                m.d.sync += segment_pattern.word_select(byte_idx, 8).eq(flash_read_data)
+                
+                with m.If(byte_idx == bytes_to_read - 1):
+                    m.d.sync += [
+                        render_done.eq(1),
+                    ]
+                    m.next = "IDLE"
+                with m.Else():
+                    m.d.sync += [
+                        byte_idx.eq(byte_idx + 1),
+                        flash_read_addr.eq(flash_read_addr + 1),
+                        flash_read_en.eq(1),
+                    ]
 
     # Port list for Verilog generation
     ports = [

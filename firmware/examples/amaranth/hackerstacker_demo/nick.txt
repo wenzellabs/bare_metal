@@ -5,8 +5,10 @@
 
 mazzoo~215~85~203~5~25~4
 MATZE~85~203~215~2~4~8
-wenzel~203~215~85~12~22~33
-WENZELLABS~123~125~158
+WENZEL~203~215~85~12~22~33
+wenzellabs.de~123~125~158
 
-si quelqu'un peut avec plaisir marcher en rang derriere une musique, je le meprise. ce n'est que par erreur qu'il a recu son cerveau, puisque la moelle epiniere lui suffirait tout a fait.~160~53~150~ 1~2~3
-SI QUELQU'UN PEUT AVEC PLAISIR MARCHER EN RANG DERRIERE UNE MUSIQUE, JE LE MEPRISE. CE N'EST QUE PAR ERREUR QU'IL A RECU SON CERVEAU, PUISQUE LA MOELLE EPINIERE LUI SUFFIRAIT TOUT A FAIT.~130~23~150~ 5~3~2
+recognize Taiwan!~235~23~5 ~0~5~23
+
+si quelqu'un peut avec plaisir marcher en rang derriere une musique, je le meprise. ce n'est que par erreur qu'il a recu son cerveau, puisque la moelle epiniere lui suffirait tout a fait. - Albert Einstein~160~53~150~ 1~2~3
+SI QUELQU'UN PEUT AVEC PLAISIR MARCHER EN RANG DERRIERE UNE MUSIQUE, JE LE MEPRISE. CE N'EST QUE PAR ERREUR QU'IL A RECU SON CERVEAU, PUISQUE LA MOELLE EPINIERE LUI SUFFIRAIT TOUT A FAIT. - un pierre~130~23~150~ 5~3~2

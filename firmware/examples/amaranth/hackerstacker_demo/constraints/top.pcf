@@ -43,11 +43,11 @@ set_io -nowarn led_ci        3    # IOB_9b
 set_io -nowarn led_power_on 46    # IOB_0a
 
 # PMOD interface - mind the special pin numbering of PMOD interfaces!
-set_io -nowarn pmod_a_n     27   # PMOD pin 1
-set_io -nowarn pmod_a_p     26   # PMOD pin 7
-set_io -nowarn pmod_2       25   # PMOD pin 2
-set_io -nowarn pmod_8       28   # PMOD pin 8
-set_io -nowarn pmod_b_p     32   # PMOD pin 3
-set_io -nowarn pmod_b_n     31   # PMOD pin 9
-set_io -nowarn pmod_4       13   # PMOD pin 4
-set_io -nowarn pmod_10      12   # PMOD pin 10
+set_io -nowarn -pullup yes pmod_a_n     27   # PMOD pin 1
+set_io -nowarn -pullup yes pmod_a_p     26   # PMOD pin 7
+set_io -nowarn -pullup yes pmod_2       25   # PMOD pin 2
+set_io -nowarn -pullup yes pmod_8       28   # PMOD pin 8
+set_io -nowarn -pullup yes pmod_b_p     32   # PMOD pin 3
+set_io -nowarn -pullup yes pmod_b_n     31   # PMOD pin 9
+set_io -nowarn -pullup yes pmod_4       13   # PMOD pin 4
+set_io -nowarn -pullup yes pmod_10      12   # PMOD pin 10

@@ -65,6 +65,7 @@ def make_stacker(width=8, height=16):
     # --- external interface ---
     enable = Signal(name="enable")
     short_press = Signal(name="short_press")  # button input (active-high pulse)
+    cheat_en = Signal(name="cheat_en")  # backdoor! Win at row 8 instead of 16
 
     # --- game state ---
     # Per-row bitmask: for each row, 8 bits saying which columns are occupied
@@ -110,12 +111,13 @@ def make_stacker(width=8, height=16):
     font_char_code = Signal(8, name="font_char_code")
     font_render_enable = Signal(name="font_render_enable")
     font_render_done = Signal(name="font_render_done")
-    font_segment_pattern = Signal(16, name="font_segment_pattern")
+    font_segment_pattern = Signal(64, name="font_segment_pattern")
     font_active = Signal(name="font_active")  # tells board_top we need font/flash
 
     # Score rendering state
-    score_segment = Signal(16, name="score_segment")  # latched segment pattern
-    score_disp_y = Signal(range(height), name="score_disp_y")
+    score_segment = Signal(64, name="score_segment")  # latched segment pattern
+    score_disp_y = Signal(range(8), name="score_disp_y")
+    score_disp_x = Signal(range(width), name="score_disp_x")
 
     # Helper: build current brick bitmask from brick_pos & brick_width
     # e.g. pos=2 width=3 -> 0b00011100
@@ -318,8 +320,11 @@ def make_stacker(width=8, height=16):
                     next_row = Signal(range(height + 1), name="next_row")
                     m.d.comb += next_row.eq(current_row + 1)
 
-                    with m.If(next_row >= height):
-                        # Stacked all 16 rows -> win!
+                    target_height = Signal(range(height + 1), name="target_height")
+                    m.d.comb += target_height.eq(Mux(cheat_en, 8, height))
+
+                    with m.If(next_row >= target_height):
+                        # Stacked all required rows -> win!
                         m.d.sync += [
                             current_row.eq(next_row),
                             flash_timer.eq(0),
@@ -544,37 +549,54 @@ def make_stacker(width=8, height=16):
                     m.d.sync += [
                         font_render_enable.eq(0),
                         score_segment.eq(font_segment_pattern),
+                        score_disp_x.eq(0),
                         score_disp_y.eq(0),
                     ]
                     m.next = "WIN_SCORE_DRAW"
 
         # -- WIN_SCORE_DRAW --------------------------------------------
-        # Render score digit segments to display (centered at x=3)
+        # Render score digit segments to display
         with m.State("WIN_SCORE_DRAW"):
             with m.If(~enable):
                 m.next = "IDLE"
             with m.Else():
                 seg_bit = Signal(name="seg_bit")
+                # Font format is 8 bytes per char (8 cols).
+                # So bit index = (score_disp_y * 8) + score_disp_x. Pure wiring.
+                bit_idx = Signal(6, name="bit_idx")
+                m.d.comb += bit_idx.eq(Cat(score_disp_x[:3], score_disp_y[:3]))
+                
                 m.d.comb += seg_bit.eq(
-                    score_segment.bit_select(score_disp_y, 1)
+                    score_segment.bit_select(bit_idx, 1)
                 )
 
-                # Render at x=3 (centered on 8-wide display), white color
+                # Render centered 8x8 on 8x16 display
+                display_x = Signal(range(width), name="display_x")
+                display_y = Signal(range(height), name="display_y")
+                m.d.comb += [
+                    display_x.eq(7 - score_disp_x),
+                    display_y.eq(score_disp_y + 4)
+                ]
+
                 with m.If(seg_bit):
                     m.d.sync += writer.set_led(
-                        x=3, y=score_disp_y,
+                        x=display_x, y=display_y,
                         r=0xFF, g=0xFF, b=0xFF
                     )
                 with m.Else():
                     m.d.sync += writer.set_led(
-                        x=3, y=score_disp_y,
+                        x=display_x, y=display_y,
                         r=0, g=0, b=0
                     )
 
-                with m.If(score_disp_y == height - 1):
-                    # All segments drawn, show score
-                    m.d.sync += flash_timer.eq(0)
-                    m.next = "WIN_SCORE_SHOW"
+                with m.If(score_disp_y == 7):
+                    m.d.sync += score_disp_y.eq(0)
+                    with m.If(score_disp_x == width - 1):
+                        # All segments drawn, show score
+                        m.d.sync += flash_timer.eq(0)
+                        m.next = "WIN_SCORE_SHOW"
+                    with m.Else():
+                        m.d.sync += score_disp_x.eq(score_disp_x + 1)
                 with m.Else():
                     m.d.sync += score_disp_y.eq(score_disp_y + 1)
 
@@ -593,7 +615,7 @@ def make_stacker(width=8, height=16):
 
     # --- ports ---
     ports = [
-        enable, short_press,
+        enable, short_press, cheat_en,
         font_char_code, font_render_enable, font_render_done,
         font_segment_pattern, font_active,
     ] + writer.signals

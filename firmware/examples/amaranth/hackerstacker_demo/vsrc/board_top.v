@@ -27,16 +27,20 @@ module top(
     input spi_miso,         // Flash MISO (H7)
     output spi_wp,          // Flash WP# (active low) - must be HIGH
     output spi_hold,        // Flash HOLD# (active low) - must be HIGH
+    // PMOD pins for button/switch testing
+    input pmod_a_n,
+    input pmod_a_p,
+    input pmod_2,
+    input pmod_8,
+    input pmod_b_p,
+    input pmod_b_n,
+    input pmod_4,
+    input pmod_10
 );
     
     // Enable LED power at start
     assign led_power_on = 1'b1;
     
-    // turn off white LEDs
-    assign led_pinky = 1'b1;  // active-low, drive HIGH to turn off
-    assign led_middle = 1'b1;
-    assign led_index = 1'b1;
-
     // SPI flash: deassert WP# and HOLD# (active-low, drive HIGH to disable)
     assign spi_wp   = 1'b1;
     assign spi_hold = 1'b1;
@@ -251,7 +255,7 @@ module top(
     // Shared outputs from font_render
     wire font_render_done;
     wire font_busy;
-    wire [15:0] font_segment_pattern;
+    wire [63:0] font_segment_pattern;
     
     font_render u_font_render (
         .clk(clk_12M),
@@ -303,6 +307,7 @@ module top(
         .rst(1'b0),
         .enable(stacker_enable),
         .short_press(short_press),
+        .cheat_en(pmod_in_state == 8'b10110111), // Backdoor: Win at row 8 when PMOD pins for idx 3 and 6 are LOW, others HIGH
         // Font renderer interface (for score display)
         .font_char_code(stacker_font_char_code),
         .font_render_enable(stacker_font_render_enable),
@@ -421,6 +426,9 @@ module top(
                    (current_mode == 3'd3) ? pattern_wr_b :
                    rainbow_wr_b;
     
+    // PMOD inputs state
+    wire [7:0] pmod_in_state = {pmod_10, pmod_4, pmod_b_n, pmod_b_p, pmod_8, pmod_2, pmod_a_p, pmod_a_n};
+    
     // Instantiate SK9822 controller with RAM framebuffer
     sk9822_controller u_sk9822 (
         .clk(clk_12M),
@@ -439,4 +447,9 @@ module top(
         .wr_extra_dim(extra_dim_reg)
     );
     
+    // turn off white LEDs
+    assign led_pinky = 1'b1;  // active-low, drive HIGH to turn off
+    assign led_middle = 1'b1;
+    assign led_index = 1'b1;
+
 endmodule
