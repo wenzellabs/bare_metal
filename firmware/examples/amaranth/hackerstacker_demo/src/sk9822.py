@@ -28,7 +28,7 @@ Helper class usage in your modules (pattern.py, game.py, etc.):
         m.d.sync += writer.set_led(x=x_counter, y=y_counter, r=0, g=0, b=0)
 """
 import sys
-from amaranth import Module, Signal
+from amaranth import Module, Signal, Mux
 from amaranth.lib.memory import Memory
 from amaranth.back import verilog
 
@@ -145,10 +145,17 @@ def make_sk9822_controller(width=8, height=16, default_brightness=1):
     wr_brightness_en = Signal(name="wr_brightness_en")  # Brightness write enable
     wr_brightness = Signal(5, name="wr_brightness")     # New brightness (0-31)
     brightness = Signal(5, reset=default_brightness, name="brightness")
-    
-    # Update brightness register
+
+    # Extra dimming (right-shift of R/G/B) 0..7
+    wr_extra_dim_en = Signal(name="wr_extra_dim_en")
+    wr_extra_dim = Signal(3, name="wr_extra_dim")
+    extra_dim = Signal(3, reset=0, name="extra_dim")
+
+    # Update brightness and extra_dim registers
     with m.If(wr_brightness_en):
         m.d.sync += brightness.eq(wr_brightness)
+    with m.If(wr_extra_dim_en):
+        m.d.sync += extra_dim.eq(wr_extra_dim)
     
     # Framebuffer: 3 separate memories for R, G, B
     # Each memory is num_leds x 8 bits
@@ -243,13 +250,27 @@ def make_sk9822_controller(width=8, height=16, default_brightness=1):
     ]
     
     # Build 32-bit LED frame: [111][5-bit brightness][8-bit blue][8-bit green][8-bit red]
+    # Ensure brightness never exceeds 5 (safety clamp) and apply extra_dim
+    safe_brightness = Signal(5)
+    m.d.comb += safe_brightness.eq(Mux(brightness > 5, 5, brightness))
+
+    # Apply right-shift dimming controlled by extra_dim before packing
+    red_sh = Signal(8)
+    green_sh = Signal(8)
+    blue_sh = Signal(8)
+    m.d.comb += [
+        red_sh.eq(red >> extra_dim),
+        green_sh.eq(green >> extra_dim),
+        blue_sh.eq(blue >> extra_dim),
+    ]
+
     led_frame = Signal(32)
     m.d.comb += led_frame.eq(
         (0b111 << 29) |
-        (brightness << 24) |
-        (blue << 16) |
-        (green << 8) |
-        red
+        (safe_brightness << 24) |
+        (blue_sh << 16) |
+        (green_sh << 8) |
+        red_sh
     )
     
     # SPI output logic
@@ -287,7 +308,8 @@ def make_sk9822_controller(width=8, height=16, default_brightness=1):
     ports = [
         led_data, led_clk,
         wr_en, wr_x, wr_y, wr_r, wr_g, wr_b,
-        wr_brightness_en, wr_brightness
+        wr_brightness_en, wr_brightness,
+        wr_extra_dim_en, wr_extra_dim
     ]
     
     return m, ports

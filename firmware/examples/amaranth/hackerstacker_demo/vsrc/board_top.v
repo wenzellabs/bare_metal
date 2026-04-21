@@ -74,14 +74,18 @@ module top(
     wire dn_press = dn_stable & ~dn_prev;
     reg [4:0] brightness_reg;  // 1-31, reset to 1
     reg brightness_wr;
+    reg [2:0] extra_dim_reg; // 0-7 extra right-shift dimming
+    reg extra_dim_wr;
 
     initial begin
         brightness_reg = 5'd1;
+        extra_dim_reg = 3'd0;
         up_stable = 1'b1;   // Match active-low idle state (buttons have pull-ups)
         dn_stable = 1'b1;
         up_prev = 1'b1;
         dn_prev = 1'b1;
         brightness_wr = 1'b0;
+        extra_dim_wr = 1'b0;
     end
 
     always @(posedge clk_12M) begin
@@ -103,13 +107,29 @@ module top(
         dn_prev <= dn_stable;
 
         brightness_wr <= 1'b0;
-        if (up_press && brightness_reg < 5'd5) begin
-            brightness_reg <= brightness_reg + 1;
-            brightness_wr <= 1'b1;
+        extra_dim_wr <= 1'b0;
+        if (up_press) begin
+            // If extra_dim is active, decrease it first (brighten via filter)
+            if (extra_dim_reg > 3'd0) begin
+                extra_dim_reg <= extra_dim_reg - 1;
+                extra_dim_wr <= 1'b1;
+            end else if (brightness_reg < 5'd5) begin
+                // Increase global brightness up to 5
+                brightness_reg <= brightness_reg + 1;
+                brightness_wr <= 1'b1;
+            end
         end
-        if (dn_press && brightness_reg > 5'd1) begin
-            brightness_reg <= brightness_reg - 1;
-            brightness_wr <= 1'b1;
+
+        if (dn_press) begin
+            // First decrease global brightness down to 1
+            if (brightness_reg > 5'd1) begin
+                brightness_reg <= brightness_reg - 1;
+                brightness_wr <= 1'b1;
+            end else if (extra_dim_reg < 3'd7) begin
+                // If at minimum brightness, increase extra_dim (further dimming)
+                extra_dim_reg <= extra_dim_reg + 1;
+                extra_dim_wr <= 1'b1;
+            end
         end
     end
 
@@ -424,7 +444,9 @@ module top(
         .wr_g(wr_g),
         .wr_b(wr_b),
         .wr_brightness_en(brightness_wr),
-        .wr_brightness(brightness_reg)
+        .wr_brightness(brightness_reg),
+        .wr_extra_dim_en(extra_dim_wr),
+        .wr_extra_dim(extra_dim_reg)
     );
     
 endmodule
