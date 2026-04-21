@@ -7,8 +7,8 @@ Image format in flash (starting at ADDR_IMAGE_START):
     Per image (concatenated):
         [MAGIC:8]         'I' (0x49)
         [LENGTH:24]       Image data size in bytes (big-endian)
-        [WIDTH:16]        Image width in pixels (big-endian)
-        [HEIGHT:16]       Image height in pixels (big-endian)
+        [WIDTH:16]        Image width in pixels (big-endian; stored as 16 bits, internal max 1024)
+        [HEIGHT:16]       Image height in pixels (big-endian; stored as 16 bits, internal max 1024)
         [FRAME_DIV:16]    Frames between position updates (big-endian)
         [DATA...]         RGB data: width x height x 3 bytes
 
@@ -49,8 +49,9 @@ def make_image(width=8, height=16):
     
     # Image header data
     image_valid = Signal(name="image_valid")
-    img_width = Signal(16, name="img_width")
-    img_height = Signal(16, name="img_height")
+    # Internal image dimension signals limited to 10 bits (max 1024)
+    img_width = Signal(10, name="img_width")
+    img_height = Signal(10, name="img_height")
     frame_divider = Signal(16, name="frame_divider")
     
     # Multi-image tracking
@@ -60,8 +61,8 @@ def make_image(width=8, height=16):
     img_data_length = Signal(24, name="img_data_length")  # from header
     
     # Current display window position in image
-    win_x = Signal(16, name="win_x")
-    win_y = Signal(16, name="win_y")
+    win_x = Signal(10, name="win_x")
+    win_y = Signal(10, name="win_y")
     dir_x = Signal(name="dir_x")
     dir_y = Signal(name="dir_y")
     
@@ -184,8 +185,8 @@ def make_image(width=8, height=16):
             with m.If(~enable):
                 m.next = "IDLE"
             with m.Else():
-                img_pixel_y = Signal(16)
-                img_pixel_x = Signal(16)
+                img_pixel_y = Signal(10)
+                img_pixel_x = Signal(10)
                 pixel_offset = Signal(24)
                 
                 m.d.comb += [
@@ -272,8 +273,8 @@ def make_image(width=8, height=16):
                     with m.If(frame_counter >= frame_divider - 1):
                         m.d.sync += frame_counter.eq(0)
                         
-                        max_x = Signal(16)
-                        max_y = Signal(16)
+                        max_x = Signal(10)
+                        max_y = Signal(10)
                         m.d.comb += [
                             max_x.eq(img_width - width),
                             max_y.eq(img_height - height),

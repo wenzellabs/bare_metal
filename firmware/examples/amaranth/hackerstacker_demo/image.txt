@@ -1,6 +1,8 @@
-# list one mor multiple png or jpg image files
+# list one more png or jpg image files
 # cycle through them with a short press in image mode
 # (cycle through modes with a long press)
+
+# images must be smaller than 1024x1024 pixels
 
 image.jpg0
 image.jpg1

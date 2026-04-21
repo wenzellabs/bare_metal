@@ -1,5 +1,5 @@
-# hackerstacker_demo — iCE40UP5K-SG48 (bare_metal)
-# Amaranth HDL → Yosys → nextpnr-ice40 → icepack
+# hackerstacker_demo - iCE40UP5K-SG48 (bare_metal)
+# Amaranth HDL -> Yosys -> nextpnr-ice40 -> icepack
 
 # ---- Toolchain ----
 PY       ?= python3
@@ -46,9 +46,9 @@ NICK_FONTS = $(FONTS)/04B_03B_.TTF:8 $(FONTS)/04B_30__.TTF:16
 # ---- Image settings ----
 IMAGE_FRAME_DIVIDER ?= 32
 
-# ---- Source → Verilog module name mapping ----
+# ---- amaranth source -> Verilog module name mapping ----
 # Each src/foo.py has verilog.convert(name="bar") producing build/bar.v
-# Map: src_basename → verilog_module_name
+# Map: src_basename -> verilog_module_name
 MOD_sk9822           = sk9822_controller
 MOD_rainbow          = rainbow_module
 MOD_pattern          = pattern_module
@@ -83,7 +83,7 @@ NICK_CONVERTER  = host/nick_convert.py
 IMAGE_CONVERTER = host/image_convert.py
 
 # ---- Image source (prefer image.txt, fallback to single file) ----
-IMAGE_SOURCE = $(firstword $(wildcard image.txt image.png image.jpg image.jpeg))
+IMAGE_SOURCE = $(firstword $(wildcard image.txt image.png image.jpg image.jpeg image.PNG image.JPG image.JPEG))
 NICK_TXT     = nick.txt
 
 # ===========================================================================
@@ -94,7 +94,7 @@ all: $(BIN)
 $(BUILD):
 	mkdir -p $@
 
-# ---- Amaranth → Verilog (one rule per module, generated from mapping) ----
+# ---- Amaranth -> Verilog (one rule per module, generated from mapping) ----
 define VGEN_RULE
 $(BUILD)/$(MOD_$(1)).v: src/$(1).py | $(BUILD)
 	$$(PY) $$< $$@
@@ -211,11 +211,11 @@ help:
 	@echo "  make              Build bitstream"
 	@echo "  make font         Build font.bin"
 	@echo "  make nick         Build nick.bin"
-	@echo "  make image        Build image.bin"
+	@echo "  make image        Build image.bin, see image.txt"
 	@echo "  make flash        Flash bitstream to slot 1"
-	@echo "  make flash-font   Flash font  → $(ADDR_FONT)"
-	@echo "  make flash-nick   Flash nick  → $(ADDR_NICK)"
-	@echo "  make flash-image  Flash image → $(ADDR_IMAGE)"
+	@echo "  make flash-font   Flash font  -> $(ADDR_FONT)"
+	@echo "  make flash-nick   Flash nick  -> $(ADDR_NICK)"
+	@echo "  make flash-image  Flash image -> $(ADDR_IMAGE)"
 	@echo "  make flash-all    Flash everything"
 	@echo "  make boot         Boot into user bitstream"
 	@echo "  make clean        Remove build/"
