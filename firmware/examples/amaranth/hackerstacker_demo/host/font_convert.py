@@ -18,8 +18,8 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 FLASH_FONT_BASE = 0x080000
-MAX_FONTS = 4
-FONT_FILE_HEADER_SIZE = 8 + 4 * MAX_FONTS  # 24 bytes
+MAX_FONTS = 8
+FONT_FILE_HEADER_SIZE = 8 + 4 * MAX_FONTS  # 40 bytes
 
 
 def next_power_of_2(n):

@@ -41,7 +41,9 @@ ADDR_NICK  = 0x0a0000
 ADDR_IMAGE = 0x0b0000
 
 # ---- Nick fonts: path:height (first = default) ----
-NICK_FONTS = $(FONTS)/04B_03B_.TTF:8 $(FONTS)/04B_30__.TTF:16
+FONTS_8 = $(wildcard $(FONTS)/8/*.TTF $(FONTS)/8/*.ttf)
+FONTS_16 = $(wildcard $(FONTS)/16/*.TTF $(FONTS)/16/*.ttf)
+NICK_FONTS = $(addsuffix :8,$(FONTS_8)) $(addsuffix :16,$(FONTS_16))
 
 # ---- Image settings ----
 IMAGE_FRAME_DIVIDER ?= 32
@@ -115,7 +117,7 @@ $(BIN): $(ASC)
 	$(ICEPACK) $< $@
 
 # ---- Font binary ----
-$(FONT_BIN): $(FONT_CONVERTER) $(wildcard $(FONTS)/*.TTF $(FONTS)/*.ttf) | $(BUILD)
+$(FONT_BIN): $(FONT_CONVERTER) $(FONTS_8) $(FONTS_16) | $(BUILD)
 	$(PY) $(FONT_CONVERTER) $(NICK_FONTS) -o $@
 
 # ---- Nick binary ----
