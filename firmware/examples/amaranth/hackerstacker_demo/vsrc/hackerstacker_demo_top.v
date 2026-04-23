@@ -4,7 +4,7 @@
 // - Multi-client SPI flash controller
 // - hackerstacker game, nick, pattern, rainbow, and image display modules
 
-module top(
+module hackerstacker_demo(
     input clk_12M,// 12MHz oscillator
     // buttons
     input btn_ok,           // Button

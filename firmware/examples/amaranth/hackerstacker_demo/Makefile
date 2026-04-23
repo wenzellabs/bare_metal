@@ -12,7 +12,7 @@ SEED     ?= 1
 # ---- FPGA ----
 DEVICE = up5k
 PKG    = sg48
-TOP    = top
+TOP    = hackerstacker_demo
 
 # ---- Directories ----
 BUILD = build
@@ -68,8 +68,8 @@ SRC_BASES    := $(basename $(notdir $(AMARANTH_SRC)))
 VGEN_ALL     := $(foreach b,$(SRC_BASES),$(BUILD)/$(MOD_$(b)).v)
 
 # ---- Static sources ----
-WRAP = $(VSRC)/board_top.v
-PCF  = constraints/top.pcf
+WRAP = $(VSRC)/hackerstacker_demo_top.v
+PCF  = constraints/bare_metal.pcf
 
 # ---- Output files ----
 JSON      = $(BUILD)/$(TOP).json
