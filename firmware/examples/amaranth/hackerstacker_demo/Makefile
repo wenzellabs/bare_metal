@@ -74,7 +74,7 @@ PCF  = constraints/bare_metal.pcf
 # ---- Output files ----
 JSON      = $(BUILD)/$(TOP).json
 ASC       = $(BUILD)/$(TOP).asc
-BIN       = $(BUILD)/$(TOP).bin
+BIN       ?= $(BUILD)/$(TOP).bin
 FONT_BIN  = $(BUILD)/font.bin
 NICK_BIN  = $(BUILD)/nick.bin
 IMAGE_BIN = $(BUILD)/image.bin
@@ -91,7 +91,7 @@ NICK_TXT     = nick.txt
 # ===========================================================================
 .PHONY: all clean flash boot run image font nick report timing stats help
 
-all: $(BIN)
+all: $(BUILD)/$(TOP).bin
 
 $(BUILD):
 	mkdir -p $@
@@ -113,7 +113,7 @@ $(ASC): $(JSON)
 		--json $< --pcf $(PCF) --asc $@ 2>&1 | tee $(BUILD)/nextpnr.log
 
 # ---- Pack bitstream ----
-$(BIN): $(ASC)
+$(BUILD)/$(TOP).bin: $(ASC)
 	$(ICEPACK) $< $@
 
 # ---- Font binary ----
@@ -155,8 +155,20 @@ clean:
 	rm -rf $(BUILD)
 
 # ---- Flash targets ----
+SLOT ?= 1
+
+ifeq ($(SLOT),1)
+FLASH_ADDR =
+else ifeq ($(SLOT),2)
+FLASH_ADDR = -a 0x040000
+else ifeq ($(SLOT),3)
+FLASH_ADDR = -a 0x060000
+else
+$(error Invalid SLOT=$(SLOT). Only slots 1, 2, and 3 are allowed.)
+endif
+
 flash: $(BIN)
-	$(TINYPROG) -p $<
+	$(TINYPROG) $(FLASH_ADDR) -p $<
 
 flash-font: $(FONT_BIN)
 	$(TINYPROG) -a $(ADDR_FONT) -p $<
