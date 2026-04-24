@@ -159,10 +159,10 @@ module julia_top (
             
             // --- Auto Zoom Logic ---
             if (auto_state == STATE_ZOOM_IN) begin
-                // Slowly zoom into target
+                // Slowly zoom into target (>> 6 gives proportional speed)
                 if (delta_x > 16'h0004 && frame_entropy > MIN_ENTROPY) begin
-                    delta_x <= delta_x - ((delta_x >> 11) | 16'h0001);
-                    delta_y <= delta_y - ((delta_y >> 11) | 16'h0001);
+                    delta_x <= delta_x - ((delta_x >> 6) | 16'h0001);
+                    delta_y <= delta_y - ((delta_y >> 6) | 16'h0001);
                 end else begin
                     // Entropy dropped too low or zoomed all the way in
                     auto_state <= STATE_ZOOM_OUT;
@@ -170,8 +170,8 @@ module julia_top (
             end else if (auto_state == STATE_ZOOM_OUT) begin
                 // Zoom out further (16'h0200 = step of 0.25 per pixel -> 4.0 total width)
                 if (delta_x < 16'h0200) begin
-                    delta_x <= delta_x + ((delta_x >> 11) | 16'h0001);
-                    delta_y <= delta_y + ((delta_y >> 11) | 16'h0001);
+                    delta_x <= delta_x + ((delta_x >> 8) | 16'h0001);
+                    delta_y <= delta_y + ((delta_y >> 8) | 16'h0001);
                 end else begin
                     // Fully zoomed out
                     delta_x <= 16'h0200;
