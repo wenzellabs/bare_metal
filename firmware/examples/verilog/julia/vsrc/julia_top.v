@@ -98,10 +98,54 @@ module julia_top (
     );
 
     // Color gradient mapping based on iter value
-    // Let's make it colorful by wrapping bits and mapping them differently
-    wire [7:0] t_r = {iter[3:0], iter[4:1]};
-    wire [7:0] t_g = {iter[4:2], iter[4:0]};
-    wire [7:0] t_b = {iter[2:0], iter[4:0]};
+    // Cycle through palettes with btn_ok
+    reg [2:0] palette = 0;
+    reg [7:0] t_r, t_g, t_b;
+
+    always @(*) begin
+        case (palette)
+            3'd0: begin // Default
+                t_r = {iter[3:0], iter[4:1]};
+                t_g = {iter[4:2], iter[4:0]};
+                t_b = {iter[2:0], iter[4:0]};
+            end
+            3'd1: begin // Fire
+                t_r = {iter[4:0], 3'b0};
+                t_g = {iter[3:0], 4'b0};
+                t_b = {iter[2:0], 5'b0};
+            end
+            3'd2: begin // Ice
+                t_r = {iter[2:0], 5'b0};
+                t_g = {iter[3:0], 4'b0};
+                t_b = {iter[4:0], 3'b0};
+            end
+            3'd3: begin // Matrix (Green)
+                t_r = {iter[2:0], 5'b0};
+                t_g = {iter[4:0], 3'b0};
+                t_b = {iter[2:0], 5'b0};
+            end
+            3'd4: begin // Synthwave (Pink/Cyan)
+                t_r = {iter[4:0], 3'b0};
+                t_g = {iter[2:0], 5'b0};
+                t_b = {iter[4:0], 3'b0};
+            end
+            3'd5: begin // Grayscale
+                t_r = {iter[4:0], 3'b0};
+                t_g = {iter[4:0], 3'b0};
+                t_b = {iter[4:0], 3'b0};
+            end
+            3'd6: begin // High Contrast
+                t_r = iter[0] ? 8'hFF : 8'h00;
+                t_g = iter[1] ? 8'hFF : 8'h00;
+                t_b = iter[2] ? 8'hFF : 8'h00;
+            end
+            3'd7: begin // Inverted default
+                t_r = ~{iter[3:0], iter[4:1]};
+                t_g = ~{iter[4:2], iter[4:0]};
+                t_b = ~{iter[2:0], iter[4:0]};
+            end
+        endcase
+    end
 
     wire [7:0] next_r = (iter == 31) ? 8'h0 : t_r;
     wire [7:0] next_g = (iter == 31) ? 8'h0 : t_g;
@@ -141,6 +185,9 @@ module julia_top (
 
     // -- Simple Sequencer (Start Julia calc -> Done -> Wait -> Repeat) --
     reg [23:0] frame_timer = 24'd400_000; // 30 FPS
+    
+    reg btn_ok_prev = 1'b1;
+
     always @(posedge clk_12M) begin
         start_julia <= 1'b0;
         lfsr <= {lfsr[14:0], lfsr[15] ^ lfsr[13] ^ lfsr[12] ^ lfsr[10]}; // LFSR for random points
@@ -148,6 +195,12 @@ module julia_top (
         if (done) begin
             frame_entropy <= total_entropy;
             frame_timer <= 24'd400_000; // wait ~33ms
+            
+            // Cycle palette on btn_ok press (sampled once per frame acts as a free debounce!)
+            btn_ok_prev <= btn_ok;
+            if (btn_ok_prev == 1'b1 && btn_ok == 1'b0) begin
+                palette <= palette + 1;
+            end
             
             // Dynamic parameter update via active-low buttons
             // Clamped C bounded to "interesting" bounds (-1.5 to +1.5) and (-2.0 to +1.0)
