@@ -64,21 +64,27 @@ module julia_top (
     reg start_julia;
     reg signed [15:0] c_x = 16'hF99A; // -0.8
     reg signed [15:0] c_y = 16'h0140; // +0.156
-    reg signed [15:0] zoom_x = 16'hF000; // -1.0
-    reg signed [15:0] zoom_y = 16'hF800; // -0.5
-    reg signed [15:0] delta_x = 16'h0100; // 0.125
-    reg signed [15:0] delta_y = 16'h0100; // 0.125
+    reg signed [15:0] zoom_x = 16'h8000;
+    reg signed [15:0] zoom_y = 16'hc000;
+    reg signed [15:0] delta_x = 16'h0010;
+    reg signed [15:0] delta_y = 16'h0010;
 
     // Zooming targets
+    reg signed [15:0] center_x = 16'h0000;
+    reg signed [15:0] center_y = 16'h0000;
     reg signed [15:0] target_x = 16'h0000;
     reg signed [15:0] target_y = 16'h0000;
-    reg zoom_in = 1'b0; // 1 = in, 0 = out
+    
+    localparam STATE_ZOOM_IN  = 2'd0;
+    localparam STATE_ZOOM_OUT = 2'd1;
+    localparam STATE_PAN      = 2'd2;
+    reg [1:0] auto_state = STATE_ZOOM_OUT;
     reg [15:0] lfsr = 16'hACE1; // Random number generator
 
     reg [15:0] total_entropy = 0;
     reg [15:0] frame_entropy = 0;
     
-    localparam [15:0] MIN_ENTROPY = 16'd400;
+    localparam [15:0] MIN_ENTROPY = 16'd42; // Arbitrary threshold for "interesting" frames
 
     julia_core fractal (
         .clk(clk_12M),
@@ -152,36 +158,57 @@ module julia_top (
             else if (!btn_right && c_x < 16'sd2048) c_x <= c_x + 16'h0020;
             
             // --- Auto Zoom Logic ---
-            if (zoom_in) begin
-                // Slowly zoom into target_x, target_y (lower steps: >> 11)
+            if (auto_state == STATE_ZOOM_IN) begin
+                // Slowly zoom into target
                 if (delta_x > 16'h0004 && frame_entropy > MIN_ENTROPY) begin
                     delta_x <= delta_x - ((delta_x >> 11) | 16'h0001);
                     delta_y <= delta_y - ((delta_y >> 11) | 16'h0001);
                 end else begin
                     // Entropy dropped too low or zoomed all the way in
-                    zoom_in <= 1'b0; 
+                    auto_state <= STATE_ZOOM_OUT;
                 end
-            end else begin
-                // Zoom out
-                if (delta_x < 16'h0100) begin
+            end else if (auto_state == STATE_ZOOM_OUT) begin
+                // Zoom out further (16'h0200 = step of 0.25 per pixel -> 4.0 total width)
+                if (delta_x < 16'h0200) begin
                     delta_x <= delta_x + ((delta_x >> 11) | 16'h0001);
                     delta_y <= delta_y + ((delta_y >> 11) | 16'h0001);
                 end else begin
                     // Fully zoomed out
-                    delta_x <= 16'h0100;
-                    delta_y <= 16'h0100;
+                    delta_x <= 16'h0200;
+                    delta_y <= 16'h0200;
                     // Pick random coords within the unit circle |p_x| + |p_y| < 1.0 (0x0800)
                     if (abs_x + abs_y < 16'h0800) begin
                         target_x <= rand_x;
                         target_y <= rand_y;
-                        zoom_in <= 1'b1;
+                        auto_state <= STATE_PAN;
                     end
+                end
+            end else if (auto_state == STATE_PAN) begin
+                // Slowly pan to target
+                if (center_x < target_x) begin
+                    if (target_x - center_x < 16'h0008) center_x <= target_x;
+                    else center_x <= center_x + 16'h0008;
+                end else if (center_x > target_x) begin
+                    if (center_x - target_x < 16'h0008) center_x <= target_x;
+                    else center_x <= center_x - 16'h0008;
+                end
+                
+                if (center_y < target_y) begin
+                    if (target_y - center_y < 16'h0008) center_y <= target_y;
+                    else center_y <= center_y + 16'h0008;
+                end else if (center_y > target_y) begin
+                    if (center_y - target_y < 16'h0008) center_y <= target_y;
+                    else center_y <= center_y - 16'h0008;
+                end
+                
+                if (center_x == target_x && center_y == target_y) begin
+                    auto_state <= STATE_ZOOM_IN;
                 end
             end
             
-            // Adjust the actual viewport (ox, oy) so target stays at the center (x=8, y=4)
-            zoom_x <= target_x - 8 * delta_x;
-            zoom_y <= target_y - 4 * delta_y;
+            // Adjust the actual viewport (ox, oy) so center stays at the center (x=8, y=4)
+            zoom_x <= center_x - 8 * delta_x;
+            zoom_y <= center_y - 4 * delta_y;
             // -----------------------
 
         end else if (frame_timer > 0) begin
