@@ -50,7 +50,7 @@ module sk9822_controller(    input  wire clk,    input  wire rst,
     end
 
     // APA102 / SK9822 format: 111, brightness, then B, G, R
-    wire [31:0] current_frame = {3'b111, 5'h02, blue, green, red};
+    wire [31:0] current_frame = {3'b111, 5'h01, blue, green, red};
 
     always @(posedge clk) begin
         if (rst) begin

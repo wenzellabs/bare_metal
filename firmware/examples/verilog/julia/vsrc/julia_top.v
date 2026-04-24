@@ -64,10 +64,21 @@ module julia_top (
     reg start_julia;
     reg signed [15:0] c_x = 16'hF99A; // -0.8
     reg signed [15:0] c_y = 16'h0140; // +0.156
-    reg signed [15:0] zoom_x = 16'hF000; // -2.0 (was E000 which is -4.0 in Q5.11)
-    reg signed [15:0] zoom_y = 16'hF800; // -1.0 (was F000 which is -2.0 in Q5.11)
-    reg signed [15:0] delta_x = 16'h0200; // 0.25
-    reg signed [15:0] delta_y = 16'h0200; // 0.25
+    reg signed [15:0] zoom_x = 16'hF000; // -1.0
+    reg signed [15:0] zoom_y = 16'hF800; // -0.5
+    reg signed [15:0] delta_x = 16'h0100; // 0.125
+    reg signed [15:0] delta_y = 16'h0100; // 0.125
+
+    // Zooming targets
+    reg signed [15:0] target_x = 16'h0000;
+    reg signed [15:0] target_y = 16'h0000;
+    reg zoom_in = 1'b0; // 1 = in, 0 = out
+    reg [15:0] lfsr = 16'hACE1; // Random number generator
+
+    reg [15:0] total_entropy = 0;
+    reg [15:0] frame_entropy = 0;
+    
+    localparam [15:0] MIN_ENTROPY = 16'd400;
 
     julia_core fractal (
         .clk(clk_12M),
@@ -81,34 +92,98 @@ module julia_top (
     );
 
     // Color gradient mapping based on iter value
-    wire [7:0] t_r = iter * 8;
-    wire [7:0] t_g = iter * 4;
-    wire [7:0] t_b = iter * 12;
+    // Let's make it colorful by wrapping bits and mapping them differently
+    wire [7:0] t_r = {iter[3:0], iter[4:1]};
+    wire [7:0] t_g = {iter[4:2], iter[4:0]};
+    wire [7:0] t_b = {iter[2:0], iter[4:0]};
+
+    wire [7:0] next_r = (iter == 31) ? 8'h0 : t_r;
+    wire [7:0] next_g = (iter == 31) ? 8'h0 : t_g;
+    wire [7:0] next_b = (iter == 31) ? 8'h0 : t_b;
+
+    wire [7:0] diff_r = (next_r > wr_r) ? (next_r - wr_r) : (wr_r - next_r);
+    wire [7:0] diff_g = (next_g > wr_g) ? (next_g - wr_g) : (wr_g - next_g);
+    wire [7:0] diff_b = (next_b > wr_b) ? (next_b - wr_b) : (wr_b - next_b);
 
     always @(posedge clk_12M) begin
         if (p_valid) begin
             wr_x <= p_x;
             wr_y <= p_y;
-            wr_r <= (iter == 31) ? 8'h0 : t_r;
-            wr_g <= (iter == 31) ? 8'h0 : t_g;
-            wr_b <= (iter == 31) ? 8'h0 : t_b;
+            wr_r <= next_r;
+            wr_g <= next_g;
+            wr_b <= next_b;
             wr_en <= 1'b1;
+
+            // Compute running entropy for this frame (compare new pixel with previous pixel)
+            if (p_x == 0 && p_y == 0) begin
+                // For the first pixel, we don't have a valid previous pixel to compare against
+                total_entropy <= 0;
+            end else begin
+                // diff_r/g/b look at next_r/g/b against wr_r/g/b which are safely the PREVIOUS cycle's pixel
+                total_entropy <= total_entropy + diff_r + diff_g + diff_b;
+            end
+
         end else begin
             wr_en <= 1'b0;
         end
     end
 
+    wire signed [15:0] rand_x = { {4{lfsr[11]}}, lfsr[11:0] }; // -2048 to 2047 (-1.0 to +1.0)
+    wire signed [15:0] rand_y = { {4{lfsr[15]}}, lfsr[15:4] }; // -2048 to 2047 (-1.0 to +1.0)
+    wire [15:0] abs_x = (rand_x[15]) ? -rand_x : rand_x;
+    wire [15:0] abs_y = (rand_y[15]) ? -rand_y : rand_y;
+
     // -- Simple Sequencer (Start Julia calc -> Done -> Wait -> Repeat) --
     reg [23:0] frame_timer = 24'd400_000; // 30 FPS
     always @(posedge clk_12M) begin
         start_julia <= 1'b0;
+        lfsr <= {lfsr[14:0], lfsr[15] ^ lfsr[13] ^ lfsr[12] ^ lfsr[10]}; // LFSR for random points
+        
         if (done) begin
+            frame_entropy <= total_entropy;
             frame_timer <= 24'd400_000; // wait ~33ms
             
-            // Dynamic parameter update (animated slowly instead of buttons)
-            c_y <= c_y + 16'h0008; // Slowly drift C_y
-            // c_x <= c_x + 16'h0004; // Slowly drift C_x
+            // Dynamic parameter update via active-low buttons
+            // Clamped C bounded to "interesting" bounds (-1.5 to +1.5) and (-2.0 to +1.0)
+            if (!btn_up && c_y > -16'sd3072)    c_y <= c_y - 16'h0020;
+            else if (!btn_down && c_y < 16'sd3072)  c_y <= c_y + 16'h0020;
             
+            if (!btn_left && c_x > -16'sd4096)  c_x <= c_x - 16'h0020;
+            else if (!btn_right && c_x < 16'sd2048) c_x <= c_x + 16'h0020;
+            
+            // --- Auto Zoom Logic ---
+            if (zoom_in) begin
+                // Slowly zoom into target_x, target_y (lower steps: >> 11)
+                if (delta_x > 16'h0004 && frame_entropy > MIN_ENTROPY) begin
+                    delta_x <= delta_x - ((delta_x >> 11) | 16'h0001);
+                    delta_y <= delta_y - ((delta_y >> 11) | 16'h0001);
+                end else begin
+                    // Entropy dropped too low or zoomed all the way in
+                    zoom_in <= 1'b0; 
+                end
+            end else begin
+                // Zoom out
+                if (delta_x < 16'h0100) begin
+                    delta_x <= delta_x + ((delta_x >> 11) | 16'h0001);
+                    delta_y <= delta_y + ((delta_y >> 11) | 16'h0001);
+                end else begin
+                    // Fully zoomed out
+                    delta_x <= 16'h0100;
+                    delta_y <= 16'h0100;
+                    // Pick random coords within the unit circle |p_x| + |p_y| < 1.0 (0x0800)
+                    if (abs_x + abs_y < 16'h0800) begin
+                        target_x <= rand_x;
+                        target_y <= rand_y;
+                        zoom_in <= 1'b1;
+                    end
+                end
+            end
+            
+            // Adjust the actual viewport (ox, oy) so target stays at the center (x=8, y=4)
+            zoom_x <= target_x - 8 * delta_x;
+            zoom_y <= target_y - 4 * delta_y;
+            // -----------------------
+
         end else if (frame_timer > 0) begin
             frame_timer <= frame_timer - 1;
             if (frame_timer == 1) begin
