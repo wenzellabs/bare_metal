@@ -1,5 +1,41 @@
-module julia_top (    input clk_12M,    inout usbp,    inout usbn,    output usb_det,    input btn_ok,    input btn_up,    input btn_down,    input btn_left,    input btn_right,    output led_index,    output led_middle,    output led_pinky,    output spi_mosi,    input spi_miso,    output spi_clk,    output spi_csn_flash,    output spi_wp,    output spi_hold,    output spi_csn_ram,    output led_di,    output led_ci,    output led_power_on);
-    assign usb_det = 1'b0;    assign led_index = 1'b1;    assign led_middle = 1'b1;    assign led_pinky = 1'b1;    assign led_power_on = 1'b1;        // SPI default idle states    assign spi_csn_ram = 1'b1;    assign spi_csn_flash = 1'b1;    assign spi_wp = 1'b1;    assign spi_hold = 1'b1;    assign spi_clk = 1'b0;    assign spi_mosi = 1'b0;
+module julia_top (
+    input clk_12M,
+    inout usbp,
+    inout usbn,
+    output usb_det,
+    input btn_ok,
+    input btn_up,
+    input btn_down,
+    input btn_left,
+    input btn_right,
+    output led_index,
+    output led_middle,
+    output led_pinky,
+    output spi_mosi,
+    input spi_miso,
+    output spi_clk,
+    output spi_csn_flash,
+    output spi_wp,
+    output spi_hold,
+    output spi_csn_ram,
+    output led_di,
+    output led_ci,
+    output led_power_on
+);
+    assign usb_det = 1'b0;
+    assign led_index = 1'b1;
+    assign led_middle = 1'b1;
+    assign led_pinky = 1'b1;
+    assign led_power_on = 1'b1;
+
+    // SPI default idle states
+    assign spi_csn_ram = 1'b1;
+    assign spi_csn_flash = 1'b1;
+    assign spi_wp = 1'b1;
+    assign spi_hold = 1'b1;
+    assign spi_clk = 1'b0;
+    assign spi_mosi = 1'b0;
+
     // -- Submodules --
     reg [3:0] wr_x;
     reg [3:0] wr_y;
