@@ -33,8 +33,8 @@ def make_pattern_module(width=8, height=16):
     # Enable signal - triggers redraw when this module becomes active
     enable = Signal(name="enable")
     
-    # Display mode selector: 0-9 for ten patterns
-    display_mode = Signal(4, name="display_mode")
+    # Display mode selector: 0-18 for patterns
+    display_mode = Signal(5, name="display_mode")
     
     # State machine to draw checkerboard
     drawing = Signal()
@@ -72,14 +72,17 @@ def make_pattern_module(width=8, height=16):
         # Angled gradients (scaled to spread hue across grid)
         # Each uses a different linear combination of x,y
         angled_raw = Signal(16)
-        with m.Switch(display_mode):
-            with m.Case(6):  # (1,2): x + 2*y, range 0..39, *6 to spread
+        base_mode = Signal(4)
+        m.d.comb += base_mode.eq(display_mode >> 1)
+        
+        with m.Switch(base_mode):
+            with m.Case(5):  # (1,2): x + 2*y, range 0..39, *6 to spread
                 m.d.comb += angled_raw.eq((draw_x + (draw_y << 1)) * 6)
-            with m.Case(7):  # (2,1): 2*x + y, range 0..30, *8 to spread
+            with m.Case(6):  # (2,1): 2*x + y, range 0..30, *8 to spread
                 m.d.comb += angled_raw.eq(((draw_x << 1) + draw_y) * 8)
-            with m.Case(8):  # (1,-2): x - 2*y + 30 (offset to keep positive), *6
+            with m.Case(7):  # (1,-2): x - 2*y + 30 (offset to keep positive), *6
                 m.d.comb += angled_raw.eq((draw_x + 30 - (draw_y << 1)) * 6)
-            with m.Case(9):  # (2,-1): 2*x - y + 15, *8
+            with m.Case(8):  # (2,-1): 2*x - y + 15, *8
                 m.d.comb += angled_raw.eq(((draw_x << 1) + 15 - draw_y) * 8)
             with m.Default():
                 m.d.comb += angled_raw.eq(0)
@@ -88,20 +91,23 @@ def make_pattern_module(width=8, height=16):
         
         hue = Signal(8)
         
-        with m.Switch(display_mode):
-            with m.Case(2):  # Rainbow horizontal
+        with m.Switch(base_mode):
+            with m.Case(1):  # Rainbow horizontal
                 m.d.comb += hue.eq(hue_h)
-            with m.Case(3):  # Rainbow vertical
+            with m.Case(2):  # Rainbow vertical
                 m.d.comb += hue.eq(hue_v)
-            with m.Case(4):  # H-zigzag
+            with m.Case(3):  # H-zigzag
                 m.d.comb += hue.eq(hue_h_rev)
-            with m.Case(5):  # V-zigzag
+            with m.Case(4):  # V-zigzag
                 m.d.comb += hue.eq(hue_v_rev)
-            with m.Case(6, 7, 8, 9):  # Angled gradient patterns
+            with m.Case(5, 6, 7, 8):  # Angled gradient patterns
                 m.d.comb += hue.eq(angled_hue)
             with m.Default():
                 m.d.comb += hue.eq(0)
         
+        is_trans = Signal()
+        m.d.comb += is_trans.eq(display_mode[0] == 0) # Even modes are trans
+
         # Rainbow RGB calculation (6-segment HSV to RGB)
         # hue * 6 to get position in extended range
         hue_x6 = Signal(14)  # hue (8-bit) * 6 needs 11 bits, but we use 14 for safety
@@ -110,6 +116,19 @@ def make_pattern_module(width=8, height=16):
         # Segment index (0-5) is top 3 bits after multiply by 6
         segment = Signal(3)
         m.d.comb += segment.eq(hue_x6 >> 8)
+
+        # Transgender flag logic based on the 6 segments (0&5: blue, 1&4: pink, 2&3: white)
+        trans_r = Signal(8)
+        trans_g = Signal(8)
+        trans_b = Signal(8)
+        
+        with m.Switch(segment):
+            with m.Case(0, 5):  # Blue (highly saturated, half brightness)
+                m.d.comb += [trans_r.eq(0), trans_g.eq(64), trans_b.eq(128)]
+            with m.Case(1, 4):  # Pink (highly saturated, half brightness)
+                m.d.comb += [trans_r.eq(128), trans_g.eq(0), trans_b.eq(64)]
+            with m.Case(2, 3, 6, 7):  # White (include 6,7 just in case)
+                m.d.comb += [trans_r.eq(255), trans_g.eq(255), trans_b.eq(255)]
         
         # Position within segment (0-255)
         seg_pos = Signal(8)
@@ -125,19 +144,22 @@ def make_pattern_module(width=8, height=16):
         rainbow_g = Signal(8)
         rainbow_b = Signal(8)
         
-        with m.Switch(segment):
-            with m.Case(0):  # Red -> Yellow (R=255, G=rising, B=0)
-                m.d.comb += [rainbow_r.eq(255), rainbow_g.eq(rising), rainbow_b.eq(0)]
-            with m.Case(1):  # Yellow -> Green (R=falling, G=255, B=0)
-                m.d.comb += [rainbow_r.eq(falling), rainbow_g.eq(255), rainbow_b.eq(0)]
-            with m.Case(2):  # Green -> Cyan (R=0, G=255, B=rising)
-                m.d.comb += [rainbow_r.eq(0), rainbow_g.eq(255), rainbow_b.eq(rising)]
-            with m.Case(3):  # Cyan -> Blue (R=0, G=falling, B=255)
-                m.d.comb += [rainbow_r.eq(0), rainbow_g.eq(falling), rainbow_b.eq(255)]
-            with m.Case(4):  # Blue -> Magenta (R=rising, G=0, B=255)
-                m.d.comb += [rainbow_r.eq(rising), rainbow_g.eq(0), rainbow_b.eq(255)]
-            with m.Case(5, 6, 7):  # Magenta -> Red (R=255, G=0, B=falling)
-                m.d.comb += [rainbow_r.eq(255), rainbow_g.eq(0), rainbow_b.eq(falling)]
+        with m.If(is_trans):
+            m.d.comb += [rainbow_r.eq(trans_r), rainbow_g.eq(trans_g), rainbow_b.eq(trans_b)]
+        with m.Else():
+            with m.Switch(segment):
+                with m.Case(0):  # Red -> Yellow (R=255, G=rising, B=0)
+                    m.d.comb += [rainbow_r.eq(255), rainbow_g.eq(rising), rainbow_b.eq(0)]
+                with m.Case(1):  # Yellow -> Green (R=falling, G=255, B=0)
+                    m.d.comb += [rainbow_r.eq(falling), rainbow_g.eq(255), rainbow_b.eq(0)]
+                with m.Case(2):  # Green -> Cyan (R=0, G=255, B=rising)
+                    m.d.comb += [rainbow_r.eq(0), rainbow_g.eq(255), rainbow_b.eq(rising)]
+                with m.Case(3):  # Cyan -> Blue (R=0, G=falling, B=255)
+                    m.d.comb += [rainbow_r.eq(0), rainbow_g.eq(falling), rainbow_b.eq(255)]
+                with m.Case(4):  # Blue -> Magenta (R=rising, G=0, B=255)
+                    m.d.comb += [rainbow_r.eq(rising), rainbow_g.eq(0), rainbow_b.eq(255)]
+                with m.Case(5, 6, 7):  # Magenta -> Red (R=255, G=0, B=falling)
+                    m.d.comb += [rainbow_r.eq(255), rainbow_g.eq(0), rainbow_b.eq(falling)]
         
         # Knight's move tile patterns (modes 10-14)
         # Compute mod-3 for tiling
@@ -160,10 +182,10 @@ def make_pattern_module(width=8, height=16):
         
         tile_pixel = Signal()
         with m.Switch(display_mode):
-            with m.Case(10):  # 10/11/01 (inverted knight tile)
+            with m.Case(18):  # 10/11/01 (inverted knight tile)
                 m.d.comb += tile_pixel.eq(
                     ~(((draw_x[0]) & (y_mod3 == 0)) |
-                      ((~draw_x[0]) & (y_mod3 == 2)))
+                      ((draw_x[0] == 0) & (y_mod3 == 2)))
                 )
             with m.Default():
                 m.d.comb += tile_pixel.eq(0)
@@ -190,7 +212,7 @@ def make_pattern_module(width=8, height=16):
                     writer.wr_g.eq(checkerboard_inv),
                     writer.wr_b.eq(checkerboard_inv),
                 ]
-            with m.Case(10):  # Knight tile pattern
+            with m.Case(18):  # Knight tile pattern
                 m.d.sync += [
                     writer.wr_en.eq(1),
                     writer.wr_x.eq(draw_x),
@@ -199,14 +221,14 @@ def make_pattern_module(width=8, height=16):
                     writer.wr_g.eq(tile_val),
                     writer.wr_b.eq(tile_val),
                 ]
-            with m.Default():  # Rainbow-based modes (2-9)
+            with m.Default():  # Rainbow-based modes (2-17)
                 m.d.sync += [
                     writer.wr_en.eq(1),
                     writer.wr_x.eq(draw_x),
                     writer.wr_y.eq(draw_y),
-                    writer.wr_r.eq(rainbow_r),
-                    writer.wr_g.eq(rainbow_g),
-                    writer.wr_b.eq(rainbow_b),
+                    writer.wr_r.eq(hue),
+                    writer.wr_g.eq(0),
+                    writer.wr_b.eq(0),
                 ]
         
         # Move to next pixel

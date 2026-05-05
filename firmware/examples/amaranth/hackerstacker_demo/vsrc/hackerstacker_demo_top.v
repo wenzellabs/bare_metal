@@ -164,7 +164,7 @@ module hackerstacker_demo(
     wire pattern_enable;      // Enable signal for pattern module
     wire rainbow_enable;      // Enable signal for rainbow module
     wire image_enable;        // Enable signal for image module
-    wire [3:0] pattern_display; // Display mode selector (0-9)
+    wire [4:0] pattern_display; // Display mode selector (0-18)
     
     mainmenu u_mainmenu (
         .clk(clk_12M),
@@ -410,21 +410,50 @@ module hackerstacker_demo(
                    (current_mode == 3'd2) ? image_wr_y :
                    (current_mode == 3'd3) ? pattern_wr_y :
                    rainbow_wr_y;
-    assign wr_r  = (current_mode == 3'd0) ? stacker_wr_r :
-                   (current_mode == 3'd1) ? nick_wr_r :
-                   (current_mode == 3'd2) ? image_wr_r :
-                   (current_mode == 3'd3) ? pattern_wr_r :
-                   rainbow_wr_r;
-    assign wr_g  = (current_mode == 3'd0) ? stacker_wr_g :
-                   (current_mode == 3'd1) ? nick_wr_g :
-                   (current_mode == 3'd2) ? image_wr_g :
-                   (current_mode == 3'd3) ? pattern_wr_g :
-                   rainbow_wr_g;
-    assign wr_b  = (current_mode == 3'd0) ? stacker_wr_b :
-                   (current_mode == 3'd1) ? nick_wr_b :
-                   (current_mode == 3'd2) ? image_wr_b :
-                   (current_mode == 3'd3) ? pattern_wr_b :
-                   rainbow_wr_b;
+    
+    // Wire pre-mapped RGB data directly from modules that don't use color mapping
+    wire [7:0] raw_wr_r  = (current_mode == 3'd0) ? stacker_wr_r :
+                           (current_mode == 3'd1) ? nick_wr_r :
+                           (current_mode == 3'd2) ? image_wr_r :
+                           (current_mode == 3'd3) ? pattern_wr_r :
+                           rainbow_wr_r;
+    wire [7:0] raw_wr_g  = (current_mode == 3'd0) ? stacker_wr_g :
+                           (current_mode == 3'd1) ? nick_wr_g :
+                           (current_mode == 3'd2) ? image_wr_g :
+                           (current_mode == 3'd3) ? pattern_wr_g :
+                           rainbow_wr_g;
+    wire [7:0] raw_wr_b  = (current_mode == 3'd0) ? stacker_wr_b :
+                           (current_mode == 3'd1) ? nick_wr_b :
+                           (current_mode == 3'd2) ? image_wr_b :
+                           (current_mode == 3'd3) ? pattern_wr_b :
+                           rainbow_wr_b;
+
+    // Use raw data acting as the direct 'hue' input to the mapper in states 3 and 4 
+    wire [7:0] mapper_hue = raw_wr_r; // Reusing Red bus line as hue data line
+
+    // State 1: raw rgb, State 2: rainbow hue, State 3: trans hue 
+    // pattern modes (0-1: checkerboards (raw), 18: knight tile (raw)) use raw directly via mode 1. 2-17 are either 2 or 3
+    // rainbow mode (0-9). even modes trans, odd modes rainbow.
+    wire is_rainbow_state = (current_mode == 3'd4);
+    wire is_pattern_state = (current_mode == 3'd3);
+    
+    wire [1:0] mapper_mode = 
+        (is_rainbow_state) ? ((pattern_display[0] == 1'b0) ? 2'd3 : 2'd2) :
+        (is_pattern_state) ? (
+            (pattern_display < 2 || pattern_display == 18) ? 2'd1 :
+            (pattern_display[0] == 1'b0) ? 2'd3 : 2'd2
+        ) : 2'd1; // Default passthrough
+
+    color_mapper u_color_mapper (
+        .hue(mapper_hue),
+        .mode(mapper_mode),
+        .raw_r(raw_wr_r),
+        .raw_g(raw_wr_g),
+        .raw_b(raw_wr_b),
+        .rgb_r(wr_r),
+        .rgb_g(wr_g),
+        .rgb_b(wr_b)
+    );
     
     // PMOD inputs state
     wire [7:0] pmod_in_state = {pmod_10, pmod_4, pmod_b_n, pmod_b_p, pmod_8, pmod_2, pmod_a_p, pmod_a_n};

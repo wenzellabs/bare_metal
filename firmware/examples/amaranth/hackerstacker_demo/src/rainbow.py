@@ -15,7 +15,7 @@ from amaranth import Module, Signal, Mux
 from amaranth.back import verilog
 
 
-NUM_RAINBOW_MODES = 5
+NUM_RAINBOW_MODES = 10
 
 
 def make_rainbow_writer(width=8, height=16):
@@ -32,7 +32,7 @@ def make_rainbow_writer(width=8, height=16):
     short_press = Signal(name="short_press")
     
     # Display mode (cycles on short_press)
-    display_mode = Signal(3, name="display_mode")
+    display_mode = Signal(4, name="display_mode")
     
     with m.If(short_press):
         with m.If(display_mode >= NUM_RAINBOW_MODES - 1):
@@ -115,7 +115,10 @@ def make_rainbow_writer(width=8, height=16):
     ]
     
     hue = Signal(8)
-    with m.Switch(display_mode):
+    base_mode = Signal(3)
+    m.d.comb += base_mode.eq(display_mode >> 1)
+
+    with m.Switch(base_mode):
         with m.Case(0):  # Diagonal (original LED index)
             m.d.comb += hue.eq(led_index[:8] + rainbow_offset)
         with m.Case(1):  # Horizontal scroll
@@ -129,6 +132,9 @@ def make_rainbow_writer(width=8, height=16):
         with m.Default():
             m.d.comb += hue.eq(led_index[:8] + rainbow_offset)
     
+    is_trans = Signal()
+    m.d.comb += is_trans.eq(display_mode[0] == 0) # Even modes are trans
+
     # Convert hue to RGB (6-segment rainbow)
     hue_x6 = Signal(11)
     m.d.comb += hue_x6.eq(hue * 6)
@@ -136,23 +142,23 @@ def make_rainbow_writer(width=8, height=16):
     segment = Signal(3)
     m.d.comb += segment.eq(hue_x6 >> 8)
     
+    # Transgender flag logic based on the 6 segments (0&5: blue, 1&4: pink, 2&3: white)
+    trans_r = Signal(8)
+    trans_g = Signal(8)
+    trans_b = Signal(8)
+    with m.Switch(segment):
+        with m.Case(0, 5):  # Blue (highly saturated, half brightness)
+            m.d.comb += [trans_r.eq(0), trans_g.eq(64), trans_b.eq(128)]
+        with m.Case(1, 4):  # Pink (highly saturated, half brightness)
+            m.d.comb += [trans_r.eq(128), trans_g.eq(0), trans_b.eq(64)]
+        with m.Case(2, 3, 6, 7):  # White (include 6,7 just in case)
+            m.d.comb += [trans_r.eq(255), trans_g.eq(255), trans_b.eq(255)]
+    
     segment_pos = Signal(8)
     m.d.comb += segment_pos.eq(hue_x6[:8])
     
     # RGB calculation based on segment
-    with m.Switch(segment):
-        with m.Case(0):  # Red to Yellow
-            m.d.comb += [wr_r.eq(255), wr_g.eq(segment_pos), wr_b.eq(0)]
-        with m.Case(1):  # Yellow to Green
-            m.d.comb += [wr_r.eq(255 - segment_pos), wr_g.eq(255), wr_b.eq(0)]
-        with m.Case(2):  # Green to Cyan
-            m.d.comb += [wr_r.eq(0), wr_g.eq(255), wr_b.eq(segment_pos)]
-        with m.Case(3):  # Cyan to Blue
-            m.d.comb += [wr_r.eq(0), wr_g.eq(255 - segment_pos), wr_b.eq(255)]
-        with m.Case(4):  # Blue to Magenta
-            m.d.comb += [wr_r.eq(segment_pos), wr_g.eq(0), wr_b.eq(255)]
-        with m.Case(5):  # Magenta to Red
-            m.d.comb += [wr_r.eq(255), wr_g.eq(0), wr_b.eq(255 - segment_pos)]
+    m.d.comb += [wr_r.eq(hue), wr_g.eq(0), wr_b.eq(0)]
     
     ports = [enable, short_press, wr_en, wr_x, wr_y, wr_r, wr_g, wr_b]
     return m, ports

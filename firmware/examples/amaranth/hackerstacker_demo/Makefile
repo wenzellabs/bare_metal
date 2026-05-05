@@ -61,6 +61,7 @@ MOD_image            = image_module
 MOD_nick             = nick_module
 MOD_stacker          = stacker_module
 MOD_font_render      = font_render
+MOD_color_mapper     = color_mapper
 
 # Collect all src/*.py and derive verilog outputs
 AMARANTH_SRC := $(wildcard src/*.py)

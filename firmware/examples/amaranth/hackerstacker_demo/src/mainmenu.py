@@ -10,7 +10,7 @@ from amaranth import Module, Signal
 from amaranth.back import verilog
 
 
-def make_mainmenu(num_pattern_modes=11):
+def make_mainmenu(num_pattern_modes=19):
     """Create main menu state machine.
     
     Args:
@@ -32,7 +32,7 @@ def make_mainmenu(num_pattern_modes=11):
     pattern_enable = Signal(name="pattern_enable")     # Enable signal for pattern module
     rainbow_enable = Signal(name="rainbow_enable")     # Enable signal for rainbow module
     image_enable = Signal(name="image_enable")         # Enable signal for image module
-    pattern_display = Signal(4, name="clock_display")  # Which pattern (0-9)
+    pattern_display = Signal(5, name="clock_display")  # Which pattern (0-18)
     
     # State machine logic
     with m.If(long_press):
@@ -73,7 +73,7 @@ def main():
         sys.exit(1)
     
     out = sys.argv[1]
-    m, ports = make_mainmenu(num_pattern_modes=11)
+    m, ports = make_mainmenu(num_pattern_modes=19)
     
     v = verilog.convert(m, name="mainmenu", ports=ports)
     
