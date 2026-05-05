@@ -4,8 +4,8 @@
 
 <img src="pics/bm_upcoming.png" alt="a black PCB in the shape of a hand showing the metal horn, a grid of LEDs shows a crosshair">
 
-- large 16x8 SPI-addressable RGB LEDs
 - five user buttons: OK, left, right, up, down
+- large 16x8 SPI-addressable RGB LEDs display
 - extensible through a PMOD interface
 - extensive power management, monitoring and battery protection in HW
 - allows for CPU-less designs or soft-core CPUs
@@ -13,7 +13,14 @@
 - program in python/amarant, verilog or spade
 - comes with LiPo battery
 - comes with a stand
+- three bright white LEDs as simple debug or flashlight
 - usable as name tag, comes with a lace
+- comes with a bootloader as 1st of four bitstreams
+- can host up to 3 user bitstreams
+- 16MBytes flash in total (1 bitstream takes < 128kBytes)
+- 8MBytes RAM in total
+- transputer research platform, as 3 user bitstreams can "boot" each other, see `bootloader` below
+- hacky but feasible: more that 3 user bitstreams (hundreds)
 
 ## tech bits
 
@@ -37,10 +44,37 @@ here's a memory map of the SPI flash:
 # 0x006_0000 - 0x007_ffff ~128kB, slot 3, yab, hooray for transputers!
 # 0x008_0000 - 0x100_0000 ~15.5MB, user data, images, fonts, text, sounds, videos etc
 ```
+```
+# in hackerstacker_demo, we reserve the first 512 KB for bootloader and bitstreams,
+# and use the rest for user data:
+# 0x008_0000 - 0x008_ffff = 64 kB, font data
+# 0x009_0000 - 0x009_ffff = 64 kB, game data
+# 0x00a_0000 - 0x00a_ffff = 64 kB, nick names
+# 0x00b_0000 - 0x0ff_ffff = ~15.3MB images, video
+```
 
 ### bootloader
 
 the bootloader is forked from https://github.com/tinyfpga/TinyFPGA-Bootloader which looks unmaintained nowadays. we forked, and implement our bootloader and the `tinyprog` flashing tool at https://codeberg.org/wenzellabs/bare_metal_bootloader
+
+```
+
+                   [-----------][----------][----------]
+                   [ user bit- ][ user bit-][ user bit-]
+                   [ stream 1  ][ stream 2 ][ stream 3 ]
+                   [           ][          ][          ]
+                   [===========][==========][==========]
+                   [-----------------------------------]
+                   [    USB-bootloader bitstream 0     ]
+                   [===================================]
+               [-------------------------------------------]
+               [ iCE40-up5k-sg48 FPGA, 5k LCs, DSP fn()s   ]
+               [===========================================]
+[-----]    [----------------------------------------------------]    [---------------]
+[ USB ]----[ bare_metal, buttons, batt., LEDs, RGB-display, PMOD]----[PMOD extensions]
+[=====]    [====================================================]    [===============]
+
+```
 
 ### power
 
