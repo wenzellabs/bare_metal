@@ -84,6 +84,16 @@ timing: $(ASC)
 stats: $(ASC)
 	@grep -A 10 "Device utilisation:" $(BUILD)/nextpnr.log 2>/dev/null
 
+# ---- Visualization ----
+svg: $(VSRCS) | $(BUILD)
+	@echo "Generating RTL schematic SVG..."
+	$(YOSYS) -p "read_verilog $(VSRCS); prep -top $(TOP); show -format svg -prefix $(BUILD)/$(TOP)_rtl $(TOP)"
+	@echo "Schematic saved to $(BUILD)/$(TOP)_rtl.svg."
+
+gui: $(JSON) $(PCF)
+	@echo "Opening nextpnr GUI (Press the Play button inside to run Place & Route!)..."
+	$(NEXTPNR) --$(DEVICE) --package $(PKG) --json $(JSON) --pcf $(PCF) --gui
+
 # ---- Help ----
 help:
 	@echo "julia demo build system"
@@ -95,6 +105,8 @@ help:
 	@echo "  make stats        Quick resource usage"
 	@echo "  make report       Full utilization + timing"
 	@echo "  make timing       Show full timing critical path report"
+	@echo "  make svg          Generate schematic SVG using Yosys"
+	@echo "  make gui          Open nextpnr GUI to see layout and routing"
 	@echo ""
 	@echo "Variables:"
 	@echo "  SLOT=1|2|3        Set flash slot (default: 2)"

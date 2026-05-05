@@ -206,6 +206,16 @@ timing: $(ASC)
 stats: $(ASC)
 	@grep -A 10 "Device utilisation:" $(BUILD)/nextpnr.log 2>/dev/null
 
+# ---- Visualization ----
+svg: $(VGEN_ALL) $(WRAP) | $(BUILD)
+	@echo "Generating RTL schematic SVG..."
+	$(YOSYS) -p "read_verilog $(VGEN_ALL) $(WRAP); prep -top $(TOP); show -format svg -prefix $(BUILD)/$(TOP)_rtl $(TOP)"
+	@echo "Schematic saved to $(BUILD)/$(TOP)_rtl.svg. To flatten submodules: add 'flatten;' before 'show' in Makefile."
+
+gui: $(JSON) $(PCF)
+	@echo "Opening nextpnr GUI (Press the Play button inside to run Place & Route!)..."
+	$(NEXTPNR) --$(DEVICE) --package $(PKG) --json $(JSON) --pcf $(PCF) --gui
+
 # ---- Help ----
 help:
 	@echo "hackerstacker_demo build system"
@@ -236,5 +246,7 @@ help:
 	@echo "  make clean        Remove build/"
 	@echo "  make stats        Quick resource usage"
 	@echo "  make report       Full utilization + timing"
+	@echo "  make svg         Generate schematic SVG using Yosys"
+	@echo "  make gui          Open nextpnr GUI to see layout and routing"
 	@echo ""
 	@echo "Fonts: $(NICK_FONTS)"
