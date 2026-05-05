@@ -42,7 +42,7 @@ ASC  = $(BUILD)/$(TOP).asc
 BIN  ?= $(BUILD)/$(TOP).bin
 
 # ===========================================================================
-.PHONY: all clean flash
+.PHONY: all clean flash report timing stats help
 
 all: $(BUILD)/$(TOP).bin
 
@@ -68,3 +68,33 @@ flash: $(BIN)
 
 clean:
 	rm -rf $(BUILD)
+
+# ---- Analysis ----
+report: $(ASC)
+	@echo "=== Resource Utilization (iCE40UP5K-SG48) ==="
+	@grep -A 20 "Device utilisation:" $(BUILD)/nextpnr.log 2>/dev/null
+	@echo ""
+	@echo "=== Timing ==="
+	@grep "Max frequency for clock" $(BUILD)/nextpnr.log 2>/dev/null
+	@echo "Binary: $$(ls -lh $(BIN) | awk '{print $$5}')"
+
+timing: $(ASC)
+	@grep -A 50 "Critical path report" $(BUILD)/nextpnr.log 2>/dev/null
+
+stats: $(ASC)
+	@grep -A 10 "Device utilisation:" $(BUILD)/nextpnr.log 2>/dev/null
+
+# ---- Help ----
+help:
+	@echo "julia demo build system"
+	@echo ""
+	@echo "Targets:"
+	@echo "  make              Build bitstream"
+	@echo "  make flash        Flash bitstream to SLOT 2 by default"
+	@echo "  make clean        Remove build/"
+	@echo "  make stats        Quick resource usage"
+	@echo "  make report       Full utilization + timing"
+	@echo "  make timing       Show full timing critical path report"
+	@echo ""
+	@echo "Variables:"
+	@echo "  SLOT=1|2|3        Set flash slot (default: 2)"
