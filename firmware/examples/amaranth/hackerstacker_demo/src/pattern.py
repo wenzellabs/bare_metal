@@ -104,62 +104,9 @@ def make_pattern_module(width=8, height=16):
                 m.d.comb += hue.eq(angled_hue)
             with m.Default():
                 m.d.comb += hue.eq(0)
-        
-        is_trans = Signal()
-        m.d.comb += is_trans.eq(display_mode[0] == 0) # Even modes are trans
 
-        # Rainbow RGB calculation (6-segment HSV to RGB)
-        # hue * 6 to get position in extended range
-        hue_x6 = Signal(14)  # hue (8-bit) * 6 needs 11 bits, but we use 14 for safety
-        m.d.comb += hue_x6.eq(hue * 6)
-        
-        # Segment index (0-5) is top 3 bits after multiply by 6
-        segment = Signal(3)
-        m.d.comb += segment.eq(hue_x6 >> 8)
-
-        # Transgender flag logic based on the 6 segments (0&5: blue, 1&4: pink, 2&3: white)
-        trans_r = Signal(8)
-        trans_g = Signal(8)
-        trans_b = Signal(8)
-        
-        with m.Switch(segment):
-            with m.Case(0, 5):  # Blue (highly saturated, half brightness)
-                m.d.comb += [trans_r.eq(0), trans_g.eq(64), trans_b.eq(128)]
-            with m.Case(1, 4):  # Pink (highly saturated, half brightness)
-                m.d.comb += [trans_r.eq(128), trans_g.eq(0), trans_b.eq(64)]
-            with m.Case(2, 3, 6, 7):  # White (include 6,7 just in case)
-                m.d.comb += [trans_r.eq(255), trans_g.eq(255), trans_b.eq(255)]
-        
-        # Position within segment (0-255)
-        seg_pos = Signal(8)
-        m.d.comb += seg_pos.eq(hue_x6[:8])
-        
-        # Rising and falling values
-        rising = seg_pos
-        falling = Signal(8)
-        m.d.comb += falling.eq(255 - seg_pos)
-        
-        # RGB values for rainbow
-        rainbow_r = Signal(8)
-        rainbow_g = Signal(8)
-        rainbow_b = Signal(8)
-        
-        with m.If(is_trans):
-            m.d.comb += [rainbow_r.eq(trans_r), rainbow_g.eq(trans_g), rainbow_b.eq(trans_b)]
-        with m.Else():
-            with m.Switch(segment):
-                with m.Case(0):  # Red -> Yellow (R=255, G=rising, B=0)
-                    m.d.comb += [rainbow_r.eq(255), rainbow_g.eq(rising), rainbow_b.eq(0)]
-                with m.Case(1):  # Yellow -> Green (R=falling, G=255, B=0)
-                    m.d.comb += [rainbow_r.eq(falling), rainbow_g.eq(255), rainbow_b.eq(0)]
-                with m.Case(2):  # Green -> Cyan (R=0, G=255, B=rising)
-                    m.d.comb += [rainbow_r.eq(0), rainbow_g.eq(255), rainbow_b.eq(rising)]
-                with m.Case(3):  # Cyan -> Blue (R=0, G=falling, B=255)
-                    m.d.comb += [rainbow_r.eq(0), rainbow_g.eq(falling), rainbow_b.eq(255)]
-                with m.Case(4):  # Blue -> Magenta (R=rising, G=0, B=255)
-                    m.d.comb += [rainbow_r.eq(rising), rainbow_g.eq(0), rainbow_b.eq(255)]
-                with m.Case(5, 6, 7):  # Magenta -> Red (R=255, G=0, B=falling)
-                    m.d.comb += [rainbow_r.eq(255), rainbow_g.eq(0), rainbow_b.eq(falling)]
+        # All HSV and Trans RGB evaluation logic has been offloaded to color_mapper.
+        # This module just outputs the raw `hue` (0-255) value through the red channel.
         
         # Knight's move tile patterns (modes 10-14)
         # Compute mod-3 for tiling

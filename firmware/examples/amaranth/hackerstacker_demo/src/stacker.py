@@ -446,40 +446,20 @@ def make_stacker(width=8, height=16):
             with m.Else():
                 m.d.sync += flash_timer.eq(flash_timer + 1)
 
-                # Compute rainbow hue from row + column wave + time
-                rb_hue = Signal(8, name="rb_hue")
-                m.d.comb += rb_hue.eq(
-                    (draw_y << 4) + (draw_x << 2) + flash_timer[17:25]
-                )
-
-                # HSV-to-RGB (6-segment rainbow)
-                rb_hue_x6 = Signal(11, name="rb_hue_x6")
-                m.d.comb += rb_hue_x6.eq(rb_hue * 6)
-
-                rb_seg = Signal(3, name="rb_seg")
-                m.d.comb += rb_seg.eq(rb_hue_x6[8:11])
-
-                rb_pos = Signal(8, name="rb_pos")
-                m.d.comb += rb_pos.eq(rb_hue_x6[0:8])
+                offset_idx = Signal(4)
+                # Shifting the timer slice to 20:24 to double the speed
+                m.d.comb += offset_idx.eq(draw_y + draw_x + flash_timer[20:24])
 
                 rb_r = Signal(8, name="rb_r")
                 rb_g = Signal(8, name="rb_g")
                 rb_b = Signal(8, name="rb_b")
                 m.d.comb += [rb_r.eq(0), rb_g.eq(0), rb_b.eq(0)]
 
-                with m.Switch(rb_seg):
-                    with m.Case(0):  # Red -> Yellow
-                        m.d.comb += [rb_r.eq(255), rb_g.eq(rb_pos), rb_b.eq(0)]
-                    with m.Case(1):  # Yellow -> Green
-                        m.d.comb += [rb_r.eq(255 - rb_pos), rb_g.eq(255), rb_b.eq(0)]
-                    with m.Case(2):  # Green -> Cyan
-                        m.d.comb += [rb_r.eq(0), rb_g.eq(255), rb_b.eq(rb_pos)]
-                    with m.Case(3):  # Cyan -> Blue
-                        m.d.comb += [rb_r.eq(0), rb_g.eq(255 - rb_pos), rb_b.eq(255)]
-                    with m.Case(4):  # Blue -> Magenta
-                        m.d.comb += [rb_r.eq(rb_pos), rb_g.eq(0), rb_b.eq(255)]
-                    with m.Case(5):  # Magenta -> Red
-                        m.d.comb += [rb_r.eq(255), rb_g.eq(0), rb_b.eq(255 - rb_pos)]
+                with m.Switch(offset_idx):
+                    for i in range(16):
+                        with m.Case(i):
+                            r, g, b = ROW_COLORS[i]
+                            m.d.comb += [rb_r.eq(r), rb_g.eq(g), rb_b.eq(b)]
 
                 m.d.sync += writer.set_led(
                     x=draw_x, y=draw_y, r=rb_r, g=rb_g, b=rb_b
