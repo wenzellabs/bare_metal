@@ -1,0 +1,64 @@
+# bare_metal
+# iCE40UP5K SG48 (QFN 48)
+
+# this is a complete bare_metal pin definition
+# you may use for your designs
+
+# 12 MHz crystal oscillator (dedicated clock pad)
+set_io -nowarn clk_12M      35    # IOT_46b_G0
+
+# USB
+set_io -nowarn usbp         42    # IOT_51a  - USB D+
+set_io -nowarn usbn         38    # IOT_50b  - USB D-
+set_io -nowarn usb_det      37    # IOT_36b  - USB_DET, active-high enables 1k5 pull-up on D+
+
+# buttons
+set_io -nowarn btn_ok       23    # IOT_37a
+set_io -nowarn btn_up       45    # IOB_5b
+set_io -nowarn btn_down     11    # IOB_20a
+set_io -nowarn btn_left     44    # IOB_3b_G6
+set_io -nowarn btn_right    10    # IOB_18a
+
+# LED indicators - three white LEDs, low active
+set_io -nowarn led_index    39    # white_index
+set_io -nowarn led_middle   40    # white_middle
+set_io -nowarn led_pinky    41    # white_pinky
+
+# SPI configuration flash
+set_io -nowarn spi_mosi     14    # IOB_32a - SPI_SO, MOSI
+set_io -nowarn spi_miso     17    # IOB_33b - SPI_SI, MISO
+set_io -nowarn spi_clk      15    # IOB_34a - SPI_SCK
+set_io -nowarn spi_csn_flash 16   # IOB_35b - SPI_CSn_FLASH
+set_io -nowarn spi_wp       18    # IOB_31b - SPI_WPn
+set_io -nowarn spi_hold     19    # IOB_29b - SPI_HOLDn
+
+# SPI PSRAM, same as above, just CSn
+set_io -nowarn spi_csn_ram   6    # IOB_13b - SPI_CSn_RAM
+
+# SK9822 / APA102-compatible LED matrix (128 LEDs, 16x8)
+set_io -nowarn led_di        4    # IOB_8a
+set_io -nowarn led_ci        3    # IOB_9b
+
+# LED matrix power enable
+set_io -nowarn led_power_on 46    # IOB_0a
+
+# PMOD interface - mind the special pin numbering of PMOD interfaces!
+## set_io -nowarn -pullup yes pmod_a_n     27   # PMOD pin 1
+## set_io -nowarn -pullup yes pmod_a_p     26   # PMOD pin 7
+## set_io -nowarn -pullup yes pmod_2       25   # PMOD pin 2
+## set_io -nowarn -pullup yes pmod_8       28   # PMOD pin 8
+## set_io -nowarn -pullup yes pmod_b_p     32   # PMOD pin 3
+## set_io -nowarn -pullup yes pmod_b_n     31   # PMOD pin 9
+## set_io -nowarn -pullup yes pmod_4       13   # PMOD pin 4
+## set_io -nowarn -pullup yes pmod_10      12   # PMOD pin 10
+
+# PMOD VGA
+set_io -nowarn -pullup yes vsync 27   # PMOD pin 1
+set_io -nowarn -pullup yes b_hi  25   # PMOD pin 2
+set_io -nowarn -pullup yes g_hi  32   # PMOD pin 3
+set_io -nowarn -pullup yes r_hi  13   # PMOD pin 4
+
+set_io -nowarn -pullup yes hsync 26   # PMOD pin 7
+set_io -nowarn -pullup yes b_lo  28   # PMOD pin 8
+set_io -nowarn -pullup yes g_lo  31   # PMOD pin 9
+set_io -nowarn -pullup yes r_lo  12   # PMOD pin 10
