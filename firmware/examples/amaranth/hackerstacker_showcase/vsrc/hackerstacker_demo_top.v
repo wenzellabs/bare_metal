@@ -49,16 +49,68 @@ module hackerstacker_demo(
     // 0xFF = all 1s -> all off (all LEDs dark)
     // 0x00 = all 0s -> all on
     
-    // Button handler signals
-    wire short_press, long_press;
-    
+    // Button handler signals (raw outputs from physical button)
+    wire short_press_raw, long_press_raw;
+
     button_handler u_button (
         .clk(clk_12M),
         .rst(1'b0),
         .btn_in(btn_ok),
-        .short_press(short_press),
-        .long_press(long_press)
+        .short_press(short_press_raw),
+        .long_press(long_press_raw)
     );
+
+    // Showroom PRNG: simulate button presses occasionally so the demo runs
+    // automatically. A 16-bit Galois LFSR (taps x^16+x^15+x^13+x^4+1) drives
+    // all random decisions using only bit-slice comparisons — no dividers.
+    // Every N seconds (N = 1..16, from lfsr[3:0]+1) we fire a simulated event;
+    // ~9.4% of events are long_press (lfsr[4:0] < 3), rest are short_press.
+    reg [15:0] lfsr;
+    reg [23:0] sec_cnt; // counts 12 MHz clocks; 12_000_000 fits in 24 bits
+    reg [4:0]  sec_elapsed;
+    reg [4:0]  sec_target;
+    reg sim_short, sim_long;
+
+    initial begin
+        lfsr        = 16'hACE1; // non-zero seed
+        sec_cnt     = 24'd0;
+        sec_elapsed = 5'd0;
+        sec_target  = 5'd5;   // ~5 s initial delay before first auto-press
+        sim_short   = 1'b0;
+        sim_long    = 1'b0;
+    end
+
+    always @(posedge clk_12M) begin
+        // 16-bit Galois LFSR — single XOR tap, one LC
+        lfsr <= {1'b0, lfsr[15:1]} ^ (lfsr[0] ? 16'hB400 : 16'h0000);
+
+        sim_short <= 1'b0;
+        sim_long  <= 1'b0;
+
+        // One-second tick (12_000_000 clocks at 12 MHz)
+        if (sec_cnt >= 24'd11999999) begin
+            sec_cnt     <= 24'd0;
+            sec_elapsed <= sec_elapsed + 1;
+
+            if (sec_elapsed + 1 >= sec_target) begin
+                // ~9.4 % long press: fire when low 5 bits < 3  (3/32 = 9.375 %)
+                if (lfsr[4:0] < 5'd3)
+                    sim_long  <= 1'b1;
+                else
+                    sim_short <= 1'b1;
+
+                // Next interval: 1..16 s from low 4 bits (no divider needed)
+                sec_target  <= {1'b0, lfsr[3:0]} + 1;
+                sec_elapsed <= 5'd0;
+            end
+        end else begin
+            sec_cnt <= sec_cnt + 1;
+        end
+    end
+
+    // Final button signals used by the rest of the design: physical OR simulated
+    wire short_press = short_press_raw | sim_short;
+    wire long_press = long_press_raw | sim_long;
     
     // Brightness control via btn_up / btn_down
     // Simple debounce + edge detect for each button
