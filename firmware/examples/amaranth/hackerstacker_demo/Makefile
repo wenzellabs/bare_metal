@@ -110,8 +110,8 @@ $(JSON): $(VGEN_ALL) $(WRAP) $(PCF)
 
 # ---- Place & Route ----
 $(ASC): $(JSON)
-	$(NEXTPNR) --$(DEVICE) --package $(PKG) --freq 16 --seed $(SEED) \
-		--json $< --pcf $(PCF) --asc $@ 2>&1 | tee $(BUILD)/nextpnr.log
+	@bash -o pipefail -c '$(NEXTPNR) --$(DEVICE) --package $(PKG) --freq 16 --seed $(SEED) \
+		--json "$<" --pcf "$(PCF)" --asc "$@" 2>&1 | tee "$(BUILD)/nextpnr.log"'
 
 # ---- Pack bitstream ----
 $(BUILD)/$(TOP).bin: $(ASC)
