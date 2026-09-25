@@ -1,11 +1,11 @@
 # Nickname configuration file
 # Format: NAME~RED~GREEN~BLUE~ BG_R~ BG_G~ BG_BLUE
-#         BG_* colors are optional~ default to black
+#         BG_* colors are optional, default to black
 # RGB values: 0-255
 
-mazzoo~215~85~203~5~25~4
-MATZE~85~203~215~2~4~8
-WENZEL~203~215~85~12~22~33
+FPGA~215~85~203~5~25~4
+I am "bare_metal" the open source FPGA dev board hosting an iCE40UP5k, 16 MBytes flash, 8 MBytes ext RAM~85~203~215~2~4~8
+Hello, my name is Nick~215~85~222~3~2~1
 wenzellabs.de~123~125~158
 
 recognize Taiwan!~235~23~5 ~0~5~23

@@ -41,8 +41,8 @@ ADDR_NICK  = 0x0a0000
 ADDR_IMAGE = 0x0b0000
 
 # ---- Nick fonts: path:height (first = default) ----
-FONTS_8 = $(wildcard $(FONTS)/8/*.TTF $(FONTS)/8/*.ttf)
-FONTS_16 = $(wildcard $(FONTS)/16/*.TTF $(FONTS)/16/*.ttf)
+FONTS_8 = $(sort $(wildcard $(FONTS)/8/*.TTF $(FONTS)/8/*.ttf))
+FONTS_16 = $(sort $(wildcard $(FONTS)/16/*.TTF $(FONTS)/16/*.ttf))
 NICK_FONTS = $(addsuffix :8,$(FONTS_8)) $(addsuffix :16,$(FONTS_16))
 
 # ---- Image settings ----
