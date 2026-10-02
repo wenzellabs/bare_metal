@@ -1,0 +1,120 @@
+use ready_valid::Rv;
+
+/// Example project for the bare_metal. To upload your modified version, install the Spade
+/// build tool by following https://docs.spade-lang.org/guide_installation.html
+///
+/// Then run `swim upload` in in the firmware/examples/spade directory.
+///
+/// It will put the project in bitstream slot 3. To use it, hold the right button while
+/// pressing the reset button at the back of the PCB
+#[no_mangle(all)]
+entity top(
+    clk: clock,
+    led_di: inv bool,
+    led_ci: inv bool,
+    led_power_on: inv bool,
+
+    btn_ok: bool,
+    btn_up: bool,
+    btn_down: bool,
+    btn_left: bool,
+    btn_right: bool,
+    
+
+    // If you want to use the other LEDs on the board, uncoment these
+    // led_index: inv bool,
+    // led_middle: inv bool,
+    // led_pinky: inv bool,
+) {
+    reg(clk) rst initial(true) = false;
+
+    // Give the LEDs power
+    set led_power_on = true;
+
+    // In order to drive the state machine we're about to define, we have to know if the SPI
+    // transmitter is ready to transmit another packet.
+    let transmitter_ready = port();
+
+    // A state machine that generates abstract control signals for the LEDs consisting of a header,
+    // data for each pixel and footer to go back to the top of the LED chain
+    reg(clk) state reset(rst: DriverState::Header) = match (state, transmitter_ready.0) {
+        (_, false) => state,
+        (DriverState::Header, _) => DriverState::Pixel(Pixel(0, 0)),
+        (DriverState::Pixel(Pixel{x: 15, y: 7}), _) => DriverState::Footer,
+        (DriverState::Pixel(Pixel{x, y: 7}), _) => DriverState::Pixel(Pixel{x: x +. 1, y: 0}),
+        (DriverState::Pixel(Pixel{x, y}), _) => DriverState::Pixel(Pixel{x, y: y +. 1}),
+        (DriverState::Footer, _) => DriverState::Header,
+    };
+
+    // For the graphics, we need a counter that is slow (but still relatively fast at human scale)
+    reg(clk) slow_counter: uint<{uint::bits_for(1200_000)}> reset(rst: 0) = if slow_counter < 600_000 {
+        slow_counter +. 1
+    } else {
+        0
+    };
+    // Current time for the animations
+    reg(clk) time reset(rst: 0u8) = if slow_counter == 0 {time +. 1} else {time};
+
+    // We now have the animation state (time) and the transmission state, but we have not
+    // specified what to send yet, which is what happens here. `Rv` is a ready/valid interface
+    // which allows the SPI controller to select when to send the next packet
+    let bytes = Rv(Some(state), transmitter_ready.1)
+        // Here we transform the abstract state "We're going to send
+        // the data for this pixel" into "we're going to send this color to the current LED"
+        .map(fn |state| {
+            match state {
+                DriverState::Header => DriverState::Header,
+                DriverState::Pixel(Pixel{x, y}) => {
+                    // If you want to change what is rendered, here is where to do it
+                    let x = zext(x) +. time;
+                    let y = zext(y) +. time;
+                    DriverState::Pixel(Color(x *. 2, y *. 3, x *. y *. 3))
+                },
+                DriverState::Footer => DriverState::Footer,
+            }
+        })
+        // We are still in an abstract state with packet kinds and colors. Here we transform
+        // it into byte packets which the SPI driver can finally send
+        .map(fn |state| {
+            match state {
+                DriverState::Header => [0x0; 4],
+                DriverState::Pixel(Color{r, g, b}) => {
+                    [0b1110_0001u8, r, g, b]
+                },
+                DriverState::Footer => [0xff; 4],
+            }
+        })
+        // SPI operates on bytes, so here we split the packet into individual bytes.
+        .inst into_element_stream(clk, rst);
+
+    // Finally, we can send the data to the LEDs via SPI
+    let spi_config = protocols::spi::SpiConfig(12);
+    let _ = inst protocols::spi::spi_controller(
+        clk:,
+        rst:,
+        write: bytes._data,
+        ready: bytes.ready,
+        config: spi_config,
+        sclk: led_ci,
+        mosi: led_di,
+        miso: false
+    );
+}
+
+struct Pixel {
+    x: uint<5>,
+    y: uint<5>,
+}
+struct Color {
+    r: uint<8>,
+    g: uint<8>,
+    b: uint<8>,
+}
+
+enum DriverState<T> {
+    Header,
+    Pixel{data: T},
+    Footer
+}
+
+

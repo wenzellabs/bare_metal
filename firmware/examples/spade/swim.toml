@@ -1,0 +1,25 @@
+name = "bare_metal"
+
+[libraries]
+protocols.git = "https://codeberg.org/spade-lang/protocols"
+
+[synthesis]
+top = "top"
+command = "synth_ice40"
+
+[pnr]
+architecture = "ice40"
+pin_file = "baremetal.pcf"
+package = "sg48"
+device = "iCE40UP5K"
+
+[packing]
+tool = "icepack"
+
+[upload]
+tool = "custom"
+commands = ["tinyprog -p #packing_result# -a 0x060000"]
+
+	
+
+
