@@ -138,6 +138,8 @@ by default the second user bitstream in slot2 is julia. it renders a julia set, 
 
 the up/down/left/right control the complex coordinate C of the julia set being rendered.
 
+the OK button changes the palette.
+
 #### psram_probe
 
 reach it by pressing btn_right while powerup/reset.
@@ -288,4 +290,22 @@ or when hanging the bare_metal around your neck (or elsewhere) you can hang the 
 - the bare_metal stand PCB
 - the 1S LiPo battery
 - double sided adhesive tape to mount the battery on the bare_metal main board
+
+## license
+
+Copyright (c) 2026 m. wenzel, wenzellabs
+
+Unless otherwise stated, the hardware designs, firmware source code,
+and documentation in this repository are licensed under:
+
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+(CC BY-NC-SA 4.0)
+
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+Commercial use, including commercial manufacture, sale, or distribution
+of products based on these materials, is not permitted without
+separate permission from the copyright holder.
+
+see LICENSE.txt
 
