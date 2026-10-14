@@ -2,6 +2,8 @@
 
 **bare metal** is an FPGA development board - the ideal platform to get started with FPGAs and HDL of one or another sort. all open source.
 
+you can buy bare_metal <a href="https://lectronz.com/products/bare_metal"> over at my little lectronz shop</a>.
+
 <img src="pics/bm_front_doc.jpg" alt="a black PCB (front) in the shape of a hand showing the metal horn, features are documented">
 
 <img src="pics/bm_back_doc.jpg" alt="a black PCB (back) in the shape of a hand showing the metal horn, features are documented">
@@ -290,6 +292,10 @@ or when hanging the bare_metal around your neck (or elsewhere) you can hang the 
 - the bare_metal stand PCB
 - the 1S LiPo battery
 - double sided adhesive tape to mount the battery on the bare_metal main board
+
+## where to get?
+
+bare_metal is available through <a href="https://lectronz.com/products/bare_metal">my little lectronz shop</a>.
 
 ## license
 
